@@ -132,3 +132,29 @@ func TestHappyViewProofPinsLoopbackOriginAndEpoch(t *testing.T) {
 		t.Fatal("accepted uncertified HappyView epoch")
 	}
 }
+
+func TestHappyViewAuthorityCertificationRequiresDedicatedSpaceAndWriteConfirmation(t *testing.T) {
+	valid := happyViewAuthorityOptions{
+		Provider: "happyview", Commit: true, Origin: "http://127.0.0.1:39090",
+		BasePath: "/comail-pds-lab", PublicHost: "happyview.example.test",
+		DID: "did:plc:test", SpaceKey: "comail-cert-example", Epoch: happyViewCertifiedEpoch,
+		CookieFile: filepath.Join(t.TempDir(), "cookie"), WorkDir: filepath.Join(t.TempDir(), "new-cert"),
+	}
+	if err := validateHappyViewAuthorityOptions(valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*happyViewAuthorityOptions){
+		"no commit":     func(value *happyViewAuthorityOptions) { value.Commit = false },
+		"real mailbox":  func(value *happyViewAuthorityOptions) { value.SpaceKey = "primary" },
+		"remote origin": func(value *happyViewAuthorityOptions) { value.Origin = "https://example.test" },
+		"moving epoch":  func(value *happyViewAuthorityOptions) { value.Epoch = "main" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := valid
+			mutate(&invalid)
+			if err := validateHappyViewAuthorityOptions(invalid); err == nil {
+				t.Fatal("accepted unsafe authority certification options")
+			}
+		})
+	}
+}

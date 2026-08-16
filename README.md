@@ -192,11 +192,17 @@ full readback, and fresh-projection rebuild.
 
 HappyView's `/dashboard/records/` page lists ordinary public-repository
 records, not permissioned-space records, so an imported mailbox correctly
-appears empty there. The lab includes a separate read-only mailbox viewer for
-the private space. It accepts only the existing signed HappyView browser
-cookie, verifies that `/auth/me` is the exact mailbox DID, pins the exact space,
-and reads records and RFC 5322 blobs through HappyView's authenticated XRPC
-routes. It does not read HappyView's SQLite database or hold another session.
+appears empty there. The lab includes a separate mailbox-state viewer for the
+private space. It accepts only the existing signed HappyView browser cookie,
+verifies that `/auth/me` is the exact mailbox DID, pins the exact space, and
+reads records and RFC 5322 blobs through HappyView's authenticated XRPC routes.
+Read/unread, flag, move, and delete controls update only the mutable state
+record using provider-enforced compare-and-swap; deletion is a non-destructive
+lab tombstone whose canonical bytes remain verifiable but are omitted from
+projections.
+State POSTs require an exact same-origin request plus a strict HttpOnly CSRF
+cookie. The viewer does not read HappyView's SQLite database or hold another
+session.
 
 With the tailnet HappyView process running, start the loopback-only viewer:
 
@@ -258,6 +264,34 @@ Provider support is contract-based, not name-based:
   idempotent writes, authenticated read-after-write, exact target binding, and
   redirect refusal. Atomic state writes are additionally required before any
   future authority cutover.
+
+## Mutable authority certification
+
+The lab now tests the part that immutable shadow delivery cannot prove:
+conflict-safe mailbox state and deletion recovery. The command below refuses
+the real `default` and `primary` spaces, requires a new empty
+`comail-cert-*` space, writes one synthetic message, and produces redacted
+evidence only:
+
+```bash
+go run ./cmd/comail-pds-lab certify-happyview-authority \
+  --provider happyview --commit \
+  --origin http://127.0.0.1:39090 \
+  --base-path /comail-pds-lab \
+  --public-host little-mac.lobster-hake.ts.net \
+  --cookie-file "$PWD/state/operator/happyview-cookie" \
+  --did did:plc:example \
+  --space-key comail-cert-unique-run \
+  --work-dir "$PWD/state/operator/authority-cert-unique-run"
+```
+
+It proves byte-exact readback, atomic message-plus-state creation, rejection of
+a stale provider CAS, idempotent retry of the winning state mutation, folder
+movement, a clean projection rebuild, tombstoning, and a second rebuild that
+does not resurrect the deleted message. The live pinned HappyView run on
+2026-08-16 passed every check. This certifies the storage/state primitive; it
+does not by itself authorize production routing or prove that Bulwark/Stalwart
+state synchronization is complete.
 
 ## Current rsky result
 

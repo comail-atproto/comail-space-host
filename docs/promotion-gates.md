@@ -14,7 +14,9 @@ mailbox, routing, or flag changes are authorized by passing these gates.
 - [ ] OAuth grants enforce the requested space, actions, and collections.
 - [ ] Refresh survives restart and concurrent refresh is single-flight.
 - [ ] Revocation stops reads and writes within the declared SLO.
-- [ ] `applyWrites` is atomic and `putRecord` rejects stale CIDs.
+- [x] Pinned local HappyView `applyWrites` atomically creates the message/state
+      pair and `putRecord` rejects a stale CID in the live authority
+      certification. Hosted providers must repeat this check independently.
 - [ ] Message-size and quota limits are measured and compatible.
 - [ ] Mailbox Lexicons are provider-registered and server validation is
       enabled, or an equivalently strict certified validation path is approved.
@@ -39,6 +41,8 @@ mailbox, routing, or flag changes are authorized by passing these gates.
 - [ ] Poison records are quarantined without wedging other messages.
 - [x] Multi-folder JMAP messages retain every membership; fresh projections
       allocate stable per-folder UIDs when the source has no IMAP identity.
+- [x] Conflict-safe read/flag/move state survives a clean rebuild; a tombstoned
+      message remains verifiable but is omitted from the rebuilt projection.
 
 ## Gate D — operator-only readiness
 

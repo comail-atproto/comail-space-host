@@ -47,6 +47,12 @@ Observed 2026-08-16; no production state was changed.
   space, wrote one synthetic message twice, and verified identical byte-exact
   receipts. It was then stopped. The test did not add synthetic mail to the
   operator's normal `default` mailbox.
+- A fresh `comail-cert-20260816-a` space passed the mutable-authority
+  certification: byte-exact readback, atomic message/state creation, stale-CID
+  rejection, idempotent mutation retry, flagging, folder movement, clean
+  rebuild, tombstoning, and a second rebuild with no resurrection. Evidence is
+  redacted under ignored owner-only state; the real `default` mailbox was not
+  mutated by this test.
 
 ## Remaining optional comparison artifact
 

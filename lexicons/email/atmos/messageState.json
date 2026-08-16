@@ -54,6 +54,12 @@
             "type": "string",
             "format": "datetime"
           },
+          "lastOperation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Opaque idempotency key for the most recently committed mailbox-state mutation."
+          },
           "projection": {
             "type": "ref",
             "ref": "#projectionIdentity"

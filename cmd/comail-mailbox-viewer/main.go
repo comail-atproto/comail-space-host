@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,6 +26,8 @@ type options struct {
 	DID                 string
 	SpaceKey            string
 	LoginPath           string
+	PublicOrigin        string
+	CookiePath          string
 }
 
 func main() {
@@ -46,6 +49,8 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&opts.DID, "did", "", "exact mailbox owner DID")
 	flags.StringVar(&opts.SpaceKey, "space-key", "default", "exact mailbox space key")
 	flags.StringVar(&opts.LoginPath, "login-path", "/comail-pds-lab/login/", "same-origin HappyView login path")
+	flags.StringVar(&opts.PublicOrigin, "public-origin", "https://little-mac.lobster-hake.ts.net", "exact browser-facing HTTPS origin")
+	flags.StringVar(&opts.CookiePath, "cookie-path", "/comail-pds-mailbox/", "exact browser-facing viewer path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -64,7 +69,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	defer listener.Close()
 	server := &http.Server{
-		Handler:           mailboxviewer.NewHandler(loader, opts.LoginPath),
+		Handler: mailboxviewer.NewMutableHandler(loader, mailboxviewer.MutableConfig{
+			LoginPath: opts.LoginPath, PublicOrigin: opts.PublicOrigin, CookiePath: opts.CookiePath,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       35 * time.Second,
 		WriteTimeout:      35 * time.Second,
@@ -73,7 +80,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
-	fmt.Printf("Read-only mailbox viewer listening on http://%s\n", opts.Listen)
+	fmt.Printf("Private mailbox state lab listening on http://%s\n", opts.Listen)
 	select {
 	case err := <-serveErr:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -103,6 +110,13 @@ func validateOptions(opts options) error {
 	}
 	if !strings.HasPrefix(opts.LoginPath, "/") || strings.HasPrefix(opts.LoginPath, "//") || strings.Contains(opts.LoginPath, "..") {
 		return errors.New("login path must be a safe same-origin path")
+	}
+	publicOrigin, err := url.Parse(opts.PublicOrigin)
+	if err != nil || publicOrigin.Scheme != "https" || publicOrigin.Hostname() == "" || publicOrigin.User != nil || publicOrigin.Path != "" || publicOrigin.RawQuery != "" || publicOrigin.Fragment != "" {
+		return errors.New("public origin must be an exact HTTPS origin")
+	}
+	if !strings.HasPrefix(opts.CookiePath, "/") || !strings.HasSuffix(opts.CookiePath, "/") || strings.Contains(opts.CookiePath, "..") {
+		return errors.New("cookie path must be an exact absolute directory path")
 	}
 	return nil
 }

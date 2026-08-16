@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/comail-atproto/comail-pds-lab/internal/authoritycert"
 	"github.com/comail-atproto/comail-pds-lab/internal/authvault"
 	"github.com/comail-atproto/comail-pds-lab/internal/memory"
 	"github.com/comail-atproto/comail-pds-lab/internal/migrate"
@@ -67,6 +68,8 @@ func run(ctx context.Context, args []string) error {
 		return runProveVandelay(ctx, args[1:])
 	case "prove-happyview":
 		return runProveHappyView(ctx, args[1:])
+	case "certify-happyview-authority":
+		return runCertifyHappyViewAuthority(ctx, args[1:])
 	case "capture-happyview-session":
 		return runCaptureHappyViewSession(ctx, args[1:])
 	case "synthetic-proof":
@@ -81,6 +84,130 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return usageError()
 	}
+}
+
+type happyViewAuthorityOptions struct {
+	Provider   string
+	Commit     bool
+	Origin     string
+	BasePath   string
+	PublicHost string
+	DID        string
+	SpaceKey   string
+	Epoch      string
+	CookieFile string
+	WorkDir    string
+	RunID      string
+}
+
+func validateHappyViewAuthorityOptions(opts happyViewAuthorityOptions) error {
+	if opts.Provider != "happyview" || !opts.Commit {
+		return errors.New("certify-happyview-authority requires both --provider happyview and --commit")
+	}
+	if opts.Epoch != happyViewCertifiedEpoch {
+		return errors.New("certify-happyview-authority requires the certified HappyView epoch")
+	}
+	if !strings.HasPrefix(opts.DID, "did:") || strings.ContainsAny(opts.DID, "/?# \t\r\n") {
+		return errors.New("certify-happyview-authority requires an exact DID")
+	}
+	if !strings.HasPrefix(opts.SpaceKey, "comail-cert-") || len(opts.SpaceKey) > 128 || strings.ContainsAny(opts.SpaceKey, "/?# \t\r\n") {
+		return errors.New("certify-happyview-authority requires a dedicated comail-cert-* space key")
+	}
+	origin, err := url.Parse(opts.Origin)
+	if err != nil || origin.Scheme != "http" || origin.Hostname() == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+		return errors.New("certify-happyview-authority origin must be a clean loopback HTTP origin")
+	}
+	if host := origin.Hostname(); !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return errors.New("certify-happyview-authority origin must be loopback-only")
+		}
+	}
+	if opts.BasePath == "/" || (opts.BasePath != "" && (!strings.HasPrefix(opts.BasePath, "/") || strings.HasSuffix(opts.BasePath, "/") || strings.Contains(opts.BasePath, ".."))) {
+		return errors.New("certify-happyview-authority received an invalid provider base path")
+	}
+	if opts.BasePath != "" && (opts.PublicHost == "" || strings.ContainsAny(opts.PublicHost, "/ :?#@")) {
+		return errors.New("certify-happyview-authority requires an exact provider virtual host")
+	}
+	for name, path := range map[string]string{"cookie-file": opts.CookieFile, "work-dir": opts.WorkDir} {
+		if !filepath.IsAbs(path) || path == string(filepath.Separator) {
+			return fmt.Errorf("certify-happyview-authority requires an absolute --%s", name)
+		}
+	}
+	if opts.RunID != "" && (len(opts.RunID) > 96 || strings.ContainsAny(opts.RunID, " \t\r\n\x00")) {
+		return errors.New("certify-happyview-authority received an invalid run ID")
+	}
+	return nil
+}
+
+func runCertifyHappyViewAuthority(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("certify-happyview-authority", flag.ContinueOnError)
+	opts := happyViewAuthorityOptions{}
+	flags.StringVar(&opts.Provider, "provider", "", "must be the literal happyview to confirm the destination")
+	flags.BoolVar(&opts.Commit, "commit", false, "write one synthetic message to a dedicated certification space")
+	flags.StringVar(&opts.Origin, "origin", "http://127.0.0.1:39090", "exact loopback HappyView origin")
+	flags.StringVar(&opts.BasePath, "base-path", "/comail-pds-lab", "provider path prefix")
+	flags.StringVar(&opts.PublicHost, "public-host", "little-mac.lobster-hake.ts.net", "provider virtual host")
+	flags.StringVar(&opts.DID, "did", "", "exact account DID authenticated in HappyView")
+	flags.StringVar(&opts.SpaceKey, "space-key", "", "new dedicated comail-cert-* space key")
+	flags.StringVar(&opts.Epoch, "epoch", happyViewCertifiedEpoch, "certified HappyView source commit")
+	flags.StringVar(&opts.CookieFile, "cookie-file", "", "absolute owner-only HappyView session cookie file")
+	flags.StringVar(&opts.WorkDir, "work-dir", "", "new absolute directory for redacted evidence and disposable projections")
+	flags.StringVar(&opts.RunID, "run-id", "", "optional opaque idempotency run ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := validateHappyViewAuthorityOptions(opts); err != nil {
+		return err
+	}
+	if opts.RunID == "" {
+		random := make([]byte, 18)
+		if _, err := rand.Read(random); err != nil {
+			return err
+		}
+		opts.RunID = base64.RawURLEncoding.EncodeToString(random)
+	}
+	doer, err := happyview.NewSessionDoer(opts.CookieFile)
+	if err != nil {
+		return err
+	}
+	var providerDoer happyview.Doer = doer
+	if opts.BasePath != "" {
+		providerDoer = &happyViewVirtualHostDoer{inner: doer, basePath: opts.BasePath, publicHost: opts.PublicHost}
+	}
+	repo, err := happyview.New(happyview.Config{
+		Origin: opts.Origin, DID: opts.DID, Epoch: opts.Epoch, AllowHTTP: true, AllowWrites: true,
+	}, providerDoer)
+	if err != nil {
+		return err
+	}
+	report, err := authoritycert.Run(ctx, repo, authoritycert.Options{
+		RecipientDID: opts.DID, SpaceKey: opts.SpaceKey, RunID: opts.RunID, WorkDir: opts.WorkDir, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeExclusiveJSON(filepath.Join(opts.WorkDir, "evidence.json"), report); err != nil {
+		return err
+	}
+	if !report.Passed {
+		return errors.New("HappyView authority certification did not pass")
+	}
+	return printJSON(report)
+}
+
+type happyViewVirtualHostDoer struct {
+	inner      happyview.Doer
+	basePath   string
+	publicHost string
+}
+
+func (d *happyViewVirtualHostDoer) Do(ctx context.Context, request *http.Request, endpoint string) (*http.Response, error) {
+	clone := request.Clone(ctx)
+	clone.URL.Path = d.basePath + request.URL.Path
+	clone.Host = d.publicHost
+	clone.Header = request.Header.Clone()
+	return d.inner.Do(ctx, clone, endpoint)
 }
 
 func happyViewCaptureHandler(nonce, output string, result chan<- error) http.Handler {
@@ -642,7 +769,7 @@ func printJSON(value any) error {
 }
 
 func usageError() error {
-	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, capture-happyview-session, synthetic-proof, vault-init, oauth-login, help")
+	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, certify-happyview-authority, capture-happyview-session, synthetic-proof, vault-init, oauth-login, help")
 }
 
 func usage() string {
@@ -655,6 +782,8 @@ Commands:
   dry-run-vandelay Validate and hash a Vandelay archive without provider writes
   prove-vandelay   Migrate an archive into memory and rebuild a fresh projection
   prove-happyview  Write a Vandelay archive to a pinned local HappyView space
+  certify-happyview-authority
+                    Prove state CAS, rebuild, and deletion in a fresh lab space
   capture-happyview-session
                     Store the local browser's signed session in an owner-only file
   synthetic-proof  Migrate synthetic mail and rebuild a fresh SQLite projection

@@ -30,6 +30,7 @@ type Report struct {
 	Folders        int               `json:"folders"`
 	Messages       int               `json:"messages"`
 	States         int               `json:"states"`
+	Tombstones     int               `json:"tombstones"`
 	TotalBytes     int64             `json:"totalBytes"`
 	ManifestSHA256 string            `json:"manifestSha256"`
 	Mismatches     []Mismatch        `json:"mismatches,omitempty"`
@@ -84,7 +85,7 @@ func Rebuild(ctx context.Context, repo repository.Repository, target repository.
 	states := make(map[string]mailbox.MessageStateRecord, len(stateRecords))
 	for _, record := range stateRecords {
 		var state mailbox.MessageStateRecord
-		if err := json.Unmarshal(record.Value, &state); err != nil || state.Type != mailbox.MessageStateCollection || state.Message != record.RKey || state.Revision == 0 || len(state.MailboxIDs) == 0 {
+		if err := json.Unmarshal(record.Value, &state); err != nil || state.Type != mailbox.MessageStateCollection || state.Message != record.RKey || state.Revision == 0 || len(state.MailboxIDs) == 0 || (state.Tombstone && state.DeletePending) {
 			report.Mismatches = append(report.Mismatches, Mismatch{Kind: "state-integrity", Key: record.RKey})
 			continue
 		}
@@ -188,6 +189,15 @@ func Rebuild(ctx context.Context, repo repository.Repository, target repository.
 		if err := mailbox.ValidateStoredMessage(target.RepoDID, item.record.RKey, item.value, raw); err != nil {
 			return report, err
 		}
+		stateJSON, _ := json.Marshal(item.state)
+		_, _ = manifest.Write([]byte(item.record.RKey + "\x00" + item.value.SHA256 + "\x00"))
+		_, _ = manifest.Write(stateJSON)
+		_, _ = manifest.Write([]byte{0})
+		report.TotalBytes += int64(len(raw))
+		if item.state.Tombstone {
+			report.Tombstones++
+			continue
+		}
 		keywords, _ := json.Marshal(item.state.Keywords)
 		references, _ := json.Marshal(item.value.References)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO messages(
@@ -205,11 +215,6 @@ source_message_id,message_date,in_reply_to,references_json
 				return report, fmt.Errorf("projection: insert message membership: %w", err)
 			}
 		}
-		report.TotalBytes += int64(len(raw))
-		_, _ = manifest.Write([]byte(item.record.RKey + "\x00" + item.value.SHA256 + "\x00"))
-		stateJSON, _ := json.Marshal(item.state)
-		_, _ = manifest.Write(stateJSON)
-		_, _ = manifest.Write([]byte{0})
 	}
 	if err := tx.Commit(); err != nil {
 		return report, err
@@ -252,6 +257,9 @@ func allocateProjectionIdentities(messages []decodedMessage, folders map[string]
 	result := make(map[string]map[string]mailbox.ProjectionIdentity, len(messages))
 	byFolder := make(map[string][]decodedMessage, len(folders))
 	for _, item := range messages {
+		if item.state.Tombstone {
+			continue
+		}
 		result[item.record.RKey] = make(map[string]mailbox.ProjectionIdentity, len(item.state.MailboxIDs))
 		for _, folderID := range item.state.MailboxIDs {
 			byFolder[folderID] = append(byFolder[folderID], item)

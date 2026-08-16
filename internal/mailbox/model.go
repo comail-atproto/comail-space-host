@@ -68,6 +68,7 @@ type MessageStateRecord struct {
 	Tombstone     bool               `json:"tombstone,omitempty"`
 	Revision      uint64             `json:"revision"`
 	UpdatedAt     string             `json:"updatedAt"`
+	LastOperation string             `json:"lastOperation,omitempty"`
 	Projection    ProjectionIdentity `json:"projection,omitempty"`
 }
 

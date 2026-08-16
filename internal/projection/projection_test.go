@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
+	"github.com/comail-atproto/comail-pds-lab/internal/mailboxstate"
 	"github.com/comail-atproto/comail-pds-lab/internal/memory"
 	"github.com/comail-atproto/comail-pds-lab/internal/migrate"
 	"github.com/comail-atproto/comail-pds-lab/internal/repository"
@@ -142,5 +144,60 @@ func TestRebuildAllocatesPerFolderUIDsForMultiMailboxMessage(t *testing.T) {
 	}
 	if memberships != 2 || distinctUIDValidity != 2 {
 		t.Fatalf("memberships=%d uidvalidity=%d", memberships, distinctUIDValidity)
+	}
+}
+
+func TestRebuildVerifiesButOmitsTombstonedMessage(t *testing.T) {
+	ctx := context.Background()
+	did := "did:plc:projectiontombstone"
+	repo := memory.NewBackend().OwnerSession(did)
+	target, err := repo.EnsureMailbox(ctx, did, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox := mailbox.NewFolder("INBOX", "inbox", mailbox.StableUIDValidity(did, "INBOX"))
+	if _, err := repo.ApplyWrites(ctx, target, []repository.Write{{Action: repository.Create, Collection: mailbox.FolderCollection, RKey: inbox.RKey, Value: inbox.Record}}); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("Subject: deleted\r\n\r\nbody\r\n")
+	blob, err := repo.UploadBlob(ctx, target, raw, mailbox.MessageMIMEType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := mailbox.NewMessagePair(mailbox.ImportedMessage{RecipientDID: did, Raw: raw, Mailbox: "INBOX"}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyWrites(ctx, target, []repository.Write{
+		{Action: repository.Create, Collection: mailbox.MessageCollection, RKey: pair.RKey, Value: pair.Message},
+		{Action: repository.Create, Collection: mailbox.MessageStateCollection, RKey: pair.RKey, Value: pair.State},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mailboxstate.Apply(ctx, repo, target, mailboxstate.Mutation{
+		MessageRKey: pair.RKey, ExpectedRevision: 1, OperationID: "delete-once", Operation: mailboxstate.Tombstone, Now: time.Unix(1, 0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "tombstone.sqlite")
+	report, err := Rebuild(ctx, repo, target, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed() || report.Messages != 1 || report.States != 1 || report.Tombstones != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var visible int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&visible); err != nil {
+		t.Fatal(err)
+	}
+	if visible != 0 {
+		t.Fatalf("visible projected messages = %d", visible)
 	}
 }

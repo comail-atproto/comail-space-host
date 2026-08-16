@@ -7,7 +7,7 @@ func TestValidateOptionsRequiresExactLoopbackListener(t *testing.T) {
 		Listen: "127.0.0.1:39093", HappyViewOrigin: "http://127.0.0.1:39090",
 		HappyViewPublicHost: "happyview.example.test",
 		HappyViewBasePath:   "/comail-pds-lab", DID: "did:plc:comailmailboxviewertest", SpaceKey: "default",
-		LoginPath: "/comail-pds-lab/login/",
+		LoginPath: "/comail-pds-lab/login/", PublicOrigin: "https://viewer.example.test", CookiePath: "/comail-pds-mailbox/",
 	}
 	if err := validateOptions(valid); err != nil {
 		t.Fatalf("valid options: %v", err)
@@ -26,7 +26,7 @@ func TestValidateOptionsRequiresPinnedIdentityAndLocalPaths(t *testing.T) {
 		Listen: "127.0.0.1:39093", HappyViewOrigin: "http://127.0.0.1:39090",
 		HappyViewPublicHost: "happyview.example.test",
 		HappyViewBasePath:   "/comail-pds-lab", DID: "did:plc:comailmailboxviewertest", SpaceKey: "default",
-		LoginPath: "/comail-pds-lab/login/",
+		LoginPath: "/comail-pds-lab/login/", PublicOrigin: "https://viewer.example.test", CookiePath: "/comail-pds-mailbox/",
 	}
 	tests := []options{
 		func() options { value := valid; value.DID = ""; return value }(),

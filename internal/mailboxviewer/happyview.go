@@ -18,6 +18,7 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
+	"github.com/comail-atproto/comail-pds-lab/internal/mailboxstate"
 	"github.com/comail-atproto/comail-pds-lab/internal/providers/happyview"
 	"github.com/comail-atproto/comail-pds-lab/internal/repository"
 )
@@ -90,6 +91,24 @@ func (l *HappyViewLoader) Load(ctx context.Context, cookie string) (MailboxView,
 		return MailboxView{}, err
 	}
 	return l.loadRecords(ctx, repo)
+}
+
+func (l *HappyViewLoader) Mutate(ctx context.Context, cookie string, mutation mailboxstate.Mutation) error {
+	if !validCookieValue(cookie) {
+		return repository.ErrUnauthorized
+	}
+	if err := l.authenticate(ctx, cookie); err != nil {
+		return err
+	}
+	doer := &cookieDoer{origin: l.origin, basePath: l.basePath, publicHost: l.publicHost, cookie: cookie, client: l.client}
+	repo, err := happyview.New(happyview.Config{
+		Origin: l.origin, DID: l.did, Epoch: happyview.CertifiedEpoch, AllowHTTP: true, AllowWrites: true,
+	}, doer)
+	if err != nil {
+		return err
+	}
+	_, err = mailboxstate.Apply(ctx, repo, l.target, mutation)
+	return err
 }
 
 func (l *HappyViewLoader) authenticate(ctx context.Context, cookie string) error {
@@ -183,6 +202,13 @@ func (l *HappyViewLoader) loadRecords(ctx context.Context, repo *happyview.Clien
 		}
 		message := summarizeMessage(raw, record)
 		state := states[stored.RKey]
+		if state.Tombstone {
+			continue
+		}
+		message.RKey = stored.RKey
+		message.Revision = state.Revision
+		message.Read = containsKeyword(state.Keywords, "$seen")
+		message.Flagged = containsKeyword(state.Keywords, "$flagged")
 		folders := make([]string, 0, len(state.MailboxIDs))
 		for _, rkey := range state.MailboxIDs {
 			if name := folderNames[rkey]; name != "" {
@@ -198,6 +224,15 @@ func (l *HappyViewLoader) loadRecords(ctx context.Context, repo *happyview.Clien
 	}
 	sort.SliceStable(view.Messages, func(i, j int) bool { return view.Messages[i].sortKey > view.Messages[j].sortKey })
 	return view, nil
+}
+
+func containsKeyword(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type cookieDoer struct {
