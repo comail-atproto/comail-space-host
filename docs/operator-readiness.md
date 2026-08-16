@@ -9,9 +9,10 @@ Observed 2026-08-16; no production state was changed.
 - Current personal PDS: `https://pds.scottlanoue.com`.
 - Current mailbox: `scott@comail.at`, served by Stalwart and exported safely
   over the public authenticated JMAP surface at `https://inbox.comail.at`.
-- The current personal PDS OAuth metadata does not advertise permissioned-space
-  scopes. It cannot host the mailbox authority proof without a later PDS
-  migration or provider upgrade.
+- The current personal PDS does not natively advertise permissioned-space
+  scopes, but it can authenticate the operator to a separate local HappyView
+  permissioned space host. It is the identity/OAuth server in this proof, not
+  the mailbox storage server.
 
 ## Isolated result
 
@@ -22,10 +23,17 @@ Observed 2026-08-16; no production state was changed.
   permissioned-authority migration, post-write verification, and clean
   projection rebuild using synthetic mail.
 - Main Comail repositories and all production services remain untouched.
+- Pinned HappyView v2.13.0 passes 31/31 selected upstream permission, record,
+  CAS, revocation, commit, and CAR tests. Its loopback SQLite runtime is built
+  and starts successfully with owner-only secrets; anonymous private routes
+  are denied.
+- The real running HTTP adapter imports and rebuilds a synthetic mailbox, and a
+  second signed synthetic identity is denied access to its private records.
 
 ## Remaining operator artifact
 
-The only unavailable input is a dedicated member-scoped Stalwart app-password.
+The remaining private actions are one interactive PDS OAuth approval and a
+dedicated member-scoped Stalwart app-password.
 It should be named for this export, exposed only to Vandelay as
 `VANDELAY_PASSWORD`, and
 revoked after the private archive is captured. The wrapper can load it from an

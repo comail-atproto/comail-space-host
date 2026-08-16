@@ -16,6 +16,18 @@
       "nsid": "email.atmos.folder",
       "authority": "mutable-experimental",
       "requires": ["compare-and-swap"]
+    },
+    {
+      "nsid": "email.atmos.blobChunk",
+      "authority": "happyview-private-compatibility"
+    },
+    {
+      "nsid": "email.atmos.blobManifest",
+      "authority": "happyview-private-compatibility"
+    },
+    {
+      "nsid": "email.atmos.blobIndex",
+      "authority": "happyview-private-compatibility"
     }
   ],
   "portableRebuild": ["listRecords", "getBlob"],

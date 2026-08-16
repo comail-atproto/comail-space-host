@@ -1,0 +1,32 @@
+{
+  "lexicon": 1,
+  "id": "email.atmos.blobChunk",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "Experimental HappyView compatibility record containing one private bounded RFC 5322 byte chunk. It is valid only inside a private email.atmos.mailbox space.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["sha256", "size", "dataBase64"],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 393216
+          },
+          "dataBase64": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 524288
+          }
+        }
+      }
+    }
+  }
+}

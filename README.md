@@ -112,6 +112,63 @@ app-password and remove its file after the archive succeeds. The archive wrapper
 refuses non-HTTPS sources, pre-existing outputs, broad parent permissions, and
 anything except mailbox/email objects.
 
+## Current HappyView result
+
+The preferred own-PDS proof now uses an unmodified, pinned local HappyView
+v2.13.0 build. Your existing PDS remains the identity and OAuth server;
+HappyView is a separate loopback-only `space_host` backed by private SQLite.
+No DID document, Comail service, or production repository changes are needed
+for this proof.
+
+HappyView's native `uploadBlob` route is deliberately not used: it proxies to
+the ordinary PDS and does not make private permissioned-space durability a safe
+email authority. The adapter stores canonical RFC 5322 bytes as deterministic,
+bounded private chunk records plus a manifest inside the same mailbox space.
+The normal Comail message record still receives an opaque repository `BlobRef`,
+and projection/rebuild code is unchanged above the adapter.
+
+Build and start the exact loopback instance:
+
+```bash
+./scripts/build-happyview.sh
+./scripts/run-happyview.sh
+```
+
+Open `http://127.0.0.1:39090/login`, sign in as `scottlanoue.com`, and approve
+the normal AT Protocol OAuth request at your current PDS. In another terminal,
+capture the HttpOnly local session without developer tools:
+
+```bash
+go run ./cmd/comail-pds-lab capture-happyview-session \
+  --out "$PWD/state/operator/happyview-cookie"
+```
+
+Open the one-use URL printed by that command in the same browser. After a
+closed Vandelay archive has passed `dry-run-vandelay`, the only live provider
+write command is:
+
+```bash
+go run ./cmd/comail-pds-lab prove-happyview \
+  --provider happyview --commit \
+  --origin http://127.0.0.1:39090 \
+  --epoch f50b2afdaf207a2ba91d76cdad7a981a87785294 \
+  --cookie-file "$PWD/state/operator/happyview-cookie" \
+  --archive "$PWD/state/operator/mailbox.sqlite" \
+  --did did:plc:dy67wyyakm7u4v2lthy5zwbn \
+  --space-key primary \
+  --work-dir "$PWD/state/operator/happyview-proof"
+```
+
+It creates or verifies an explicitly private space with an exact six-collection
+allowlist, imports idempotently, reads every message back through HappyView,
+and rebuilds a fresh SQLite projection before producing redacted evidence.
+Run `./scripts/test-happyview.sh` to repeat the 31 upstream space/auth tests and
+the Comail adapter/contract tests. When the local runtime is already running,
+it also performs a real synthetic mailbox import, full readback/rebuild, and
+second-identity denial through its HTTP routes. The certificate is
+`providers/happyview-certification.json`. The pinned frontend currently reports
+21 npm audit findings, so the lab remains loopback-only.
+
 ## Current rsky result
 
 The unmodified pinned rsky epoch is **not certified for mailbox writes**: its

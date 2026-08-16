@@ -36,6 +36,26 @@ blobs before the record transaction, and a regression proves rejected writes
 leave no record. Write mode requires that exact epoch+patch certification and
 remains disabled for normal or hosted rsky clients.
 
+### HappyView compatibility provider
+
+For the own-PDS experiment, the user's ordinary PDS provides DID resolution and
+AT Protocol OAuth while a pinned local HappyView instance provides the separate
+permissioned space host. This does not claim that the ordinary PDS stores the
+mailbox. A future portable deployment advertises `#atproto_space_host` in the
+DID document or uses a PDS with native permissioned-space support.
+
+HappyView's standard blob upload proxies to the ordinary PDS, while its space
+records live in the HappyView database. Therefore the compatibility provider
+does not use native blobs for canonical email. It divides each message into
+384-KiB `email.atmos.blobChunk` records in the private mailbox space, binds them
+to an `email.atmos.blobManifest`, and uses an `email.atmos.blobIndex` to resolve
+the manifest CID exposed through the repository abstraction. Every chunk and
+the reconstructed message are verified with SHA-256 and bounded at 10 MiB.
+
+This shim preserves the provider-neutral Comail mailbox model and proves the
+full migration/rebuild path today. It is not a proposal to standardize chunked
+email records; a ratified private-blob facility can replace only this adapter.
+
 ## Data model
 
 ### `email.atmos.message` v1
@@ -108,3 +128,9 @@ and redirects are refused. The callback is an exact IPv4 loopback URL.
 Session and pending-flow state are stored in an AES-256-GCM file with a separate
 32-byte key; both files and their directory are private and updates are
 fsync/rename atomic under a cross-process lock.
+
+The HappyView proof uses HappyView's own OAuth flow against the user's current
+PDS. Its signed HttpOnly dashboard cookie is captured through a random one-use
+URL on a second exact IPv4 loopback port (cookies are host-scoped, not
+port-scoped), then stored create-only with mode 0600. Provider requests disable
+proxies and redirects and refuse any non-loopback destination.

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -19,12 +22,17 @@ import (
 	"github.com/comail-atproto/comail-pds-lab/internal/migrate"
 	"github.com/comail-atproto/comail-pds-lab/internal/oauthclient"
 	"github.com/comail-atproto/comail-pds-lab/internal/projection"
+	"github.com/comail-atproto/comail-pds-lab/internal/providers/happyview"
 	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
 	"github.com/comail-atproto/comail-pds-lab/internal/synthetic"
 	"github.com/comail-atproto/comail-pds-lab/internal/vandelayimport"
 )
 
 const syntheticDID = "did:plc:comailpdslabsynthetic"
+
+const happyViewCertifiedEpoch = happyview.CertifiedEpoch
+
+var errHappyViewWriteConfirmation = errors.New("prove-happyview requires both --provider happyview and --commit")
 
 type proofEvidence struct {
 	Version    int               `json:"version"`
@@ -57,6 +65,10 @@ func run(ctx context.Context, args []string) error {
 		return runDryRunVandelay(ctx, args[1:])
 	case "prove-vandelay":
 		return runProveVandelay(ctx, args[1:])
+	case "prove-happyview":
+		return runProveHappyView(ctx, args[1:])
+	case "capture-happyview-session":
+		return runCaptureHappyViewSession(ctx, args[1:])
 	case "synthetic-proof":
 		return runSyntheticProof(ctx, args[1:])
 	case "vault-init":
@@ -69,6 +81,223 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return usageError()
 	}
+}
+
+func happyViewCaptureHandler(nonce, output string, result chan<- error) http.Handler {
+	var completed atomic.Bool
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Cache-Control", "no-store")
+		response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if request.Method != http.MethodGet || request.URL.Path != "/capture/"+nonce {
+			http.NotFound(response, request)
+			return
+		}
+		if !completed.CompareAndSwap(false, true) {
+			http.Error(response, "Session capture already completed.", http.StatusConflict)
+			return
+		}
+		cookie, err := request.Cookie("happyview_session")
+		if err != nil || cookie.Value == "" || len(cookie.Value) > 16*1024 || strings.ContainsAny(cookie.Value, ";\r\n\x00") {
+			http.Error(response, "No valid local HappyView session was present. Log in first, then retry the capture command.", http.StatusUnauthorized)
+			result <- errors.New("capture-happyview-session did not receive a valid HappyView cookie")
+			return
+		}
+		err = writeExclusiveSecret(output, []byte("happyview_session="+cookie.Value+"\n"))
+		if err != nil {
+			http.Error(response, "The session could not be stored.", http.StatusInternalServerError)
+			result <- err
+			return
+		}
+		_, _ = response.Write([]byte("Comail PDS lab captured the local HappyView session. You may close this tab.\n"))
+		result <- nil
+	})
+}
+
+func runCaptureHappyViewSession(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("capture-happyview-session", flag.ContinueOnError)
+	output := flags.String("out", "", "new absolute owner-only session file")
+	listen := flags.String("listen", "127.0.0.1:39091", "exact IPv4 loopback listener")
+	timeout := flags.Duration("timeout", 5*time.Minute, "maximum time to wait for the browser")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(*output) || *output == string(filepath.Separator) {
+		return errors.New("capture-happyview-session requires an absolute --out")
+	}
+	host, _, err := net.SplitHostPort(*listen)
+	if err != nil || host != "127.0.0.1" {
+		return errors.New("capture-happyview-session listener must use exact IPv4 loopback")
+	}
+	parent := filepath.Dir(*output)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(parent)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("capture-happyview-session output directory must be owner-only")
+	}
+	if _, err := os.Lstat(*output); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return errors.New("capture-happyview-session refuses to overwrite its output")
+	}
+	nonceBytes := make([]byte, 24)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return err
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return fmt.Errorf("listen for HappyView session capture: %w", err)
+	}
+	defer listener.Close()
+	result := make(chan error, 1)
+	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: happyViewCaptureHandler(nonce, *output, result)}
+	serveErr := make(chan error, 1)
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+	}()
+	if err := printJSON(map[string]any{
+		"version":    1,
+		"captureUrl": "http://" + *listen + "/capture/" + nonce,
+		"next":       "While logged into HappyView on 127.0.0.1, open this one-use URL in the same browser.",
+	}); err != nil {
+		_ = server.Close()
+		return err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	select {
+	case err := <-result:
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+		if err != nil {
+			return err
+		}
+		return printJSON(map[string]any{"version": 1, "captured": true, "path": *output})
+	case err := <-serveErr:
+		return err
+	case <-waitCtx.Done():
+		_ = server.Close()
+		return fmt.Errorf("HappyView session capture wait ended: %w", waitCtx.Err())
+	}
+}
+
+func writeExclusiveSecret(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+type happyViewProofOptions struct {
+	Provider   string
+	Commit     bool
+	Archive    string
+	Origin     string
+	DID        string
+	SpaceKey   string
+	Epoch      string
+	CookieFile string
+	WorkDir    string
+}
+
+func validateHappyViewProofOptions(opts happyViewProofOptions) error {
+	if opts.Provider != "happyview" || !opts.Commit {
+		return errHappyViewWriteConfirmation
+	}
+	if opts.Epoch != happyViewCertifiedEpoch {
+		return errors.New("prove-happyview requires the certified HappyView epoch")
+	}
+	if !strings.HasPrefix(opts.DID, "did:") || strings.ContainsAny(opts.DID, "/?#") || opts.SpaceKey == "" {
+		return errors.New("prove-happyview requires an exact DID and space key")
+	}
+	origin, err := url.Parse(opts.Origin)
+	if err != nil || origin.Scheme != "http" || origin.Hostname() == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
+		return errors.New("prove-happyview origin must be a clean loopback HTTP origin")
+	}
+	host := origin.Hostname()
+	if !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return errors.New("prove-happyview origin must be loopback-only")
+		}
+	}
+	for name, path := range map[string]string{"archive": opts.Archive, "cookie-file": opts.CookieFile, "work-dir": opts.WorkDir} {
+		if !filepath.IsAbs(path) || path == string(filepath.Separator) {
+			return fmt.Errorf("prove-happyview requires an absolute --%s", name)
+		}
+	}
+	return nil
+}
+
+func runProveHappyView(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("prove-happyview", flag.ContinueOnError)
+	opts := happyViewProofOptions{}
+	flags.StringVar(&opts.Provider, "provider", "", "must be the literal happyview to confirm the destination")
+	flags.BoolVar(&opts.Commit, "commit", false, "perform provider writes after all target checks")
+	flags.StringVar(&opts.Archive, "archive", "", "absolute path to a closed Vandelay archive")
+	flags.StringVar(&opts.Origin, "origin", "http://127.0.0.1:39090", "exact loopback HappyView origin")
+	flags.StringVar(&opts.DID, "did", "", "exact mailbox DID authenticated in HappyView")
+	flags.StringVar(&opts.SpaceKey, "space-key", "primary", "exact mailbox space key")
+	flags.StringVar(&opts.Epoch, "epoch", happyViewCertifiedEpoch, "certified HappyView source commit")
+	flags.StringVar(&opts.CookieFile, "cookie-file", "", "absolute owner-only HappyView session cookie file")
+	flags.StringVar(&opts.WorkDir, "work-dir", "", "new absolute directory for proof artifacts")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := validateHappyViewProofOptions(opts); err != nil {
+		return err
+	}
+	doer, err := happyview.NewSessionDoer(opts.CookieFile)
+	if err != nil {
+		return err
+	}
+	repo, err := happyview.New(happyview.Config{
+		Origin: opts.Origin, DID: opts.DID, Epoch: opts.Epoch,
+		AllowHTTP: true, AllowWrites: true,
+	}, doer)
+	if err != nil {
+		return err
+	}
+	if err := os.Mkdir(opts.WorkDir, 0o700); err != nil {
+		return fmt.Errorf("create proof directory: %w", err)
+	}
+	snapshot, err := vandelayimport.Open(opts.Archive)
+	if err != nil {
+		return err
+	}
+	defer snapshot.Close()
+	migration, err := migrate.Run(ctx, snapshot, repo, migrate.Options{RecipientDID: opts.DID, SpaceKey: opts.SpaceKey, Commit: true})
+	if err != nil {
+		return err
+	}
+	projectionReport, err := projection.Rebuild(ctx, repo, migration.Target, filepath.Join(opts.WorkDir, "rebuilt-projection.sqlite"))
+	if err != nil {
+		return err
+	}
+	evidence := proofEvidence{
+		Version: 1, Synthetic: false, Generated: time.Now().UTC().Format(time.RFC3339),
+		Migration: migration, Projection: projectionReport,
+		Passed: migration.Verification.Passed() && projectionReport.Passed(),
+	}
+	if err := writeExclusiveJSON(filepath.Join(opts.WorkDir, "evidence.json"), evidence); err != nil {
+		return err
+	}
+	if !evidence.Passed {
+		return errors.New("HappyView authority proof did not pass")
+	}
+	return printJSON(evidence)
 }
 
 func runProveVandelay(ctx context.Context, args []string) error {
@@ -391,7 +620,7 @@ func printJSON(value any) error {
 }
 
 func usageError() error {
-	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, synthetic-proof, vault-init, oauth-login, help")
+	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, capture-happyview-session, synthetic-proof, vault-init, oauth-login, help")
 }
 
 func usage() string {
@@ -403,6 +632,9 @@ Commands:
   inspect-vandelay Inventory one closed Stalwart/Vandelay account archive
   dry-run-vandelay Validate and hash a Vandelay archive without provider writes
   prove-vandelay   Migrate an archive into memory and rebuild a fresh projection
+  prove-happyview  Write a Vandelay archive to a pinned local HappyView space
+  capture-happyview-session
+                    Store the local browser's signed session in an owner-only file
   synthetic-proof  Migrate synthetic mail and rebuild a fresh SQLite projection
   vault-init       Create an encrypted OAuth session vault and key
   oauth-login      Obtain and encrypt an exact mailbox-space OAuth grant
