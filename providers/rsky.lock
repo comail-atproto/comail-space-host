@@ -1,0 +1,5 @@
+repository=https://github.com/blacksky-algorithms/rsky.git
+commit=2918753b1f32ae99022bc2c5cc9a0cc645095337
+space_api=com.atproto.space
+space_management_api=com.atproto.simplespace
+verified_at=2026-08-15

@@ -1,0 +1,23 @@
+{
+  "spaceType": "email.atmos.mailbox",
+  "version": 1,
+  "cardinality": "one-space-per-email-account",
+  "collections": [
+    {
+      "nsid": "email.atmos.message",
+      "authority": "immutable"
+    },
+    {
+      "nsid": "email.atmos.messageState",
+      "authority": "mutable-experimental",
+      "requires": ["compare-and-swap"]
+    },
+    {
+      "nsid": "email.atmos.folder",
+      "authority": "mutable-experimental",
+      "requires": ["compare-and-swap"]
+    }
+  ],
+  "portableRebuild": ["listRecords", "getBlob"],
+  "optionalAccelerators": ["listRepoOps", "getRepo", "registerNotify"]
+}

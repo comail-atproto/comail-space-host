@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "provider": "rsky",
+  "repository": "https://github.com/blacksky-algorithms/rsky.git",
+  "epoch": "2918753b1f32ae99022bc2c5cc9a0cc645095337",
+  "evaluatedAt": "2026-08-15",
+  "passed": false,
+  "checks": {
+    "sourceCommitPinned": "pass",
+    "spaceApiPresent": "pass",
+    "compareAndSwapPathPresent": "pass",
+    "referencedBlobReadAuthorizationPresent": "pass",
+    "blobVerifiedBeforeRecordCommit": "fail",
+    "residualRecordRegressionTestPresent": "fail",
+    "upstreamIntegrationSuiteAfterSourceGate": "not-run"
+  },
+  "blocker": "apply_space_writes commits the space transaction before verify_blob_and_make_permanent; an errored missing-blob write may leave durable record state"
+}
