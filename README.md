@@ -114,8 +114,10 @@ anything except mailbox/email objects.
 
 ## Current HappyView result
 
-The preferred own-PDS proof now uses an unmodified, pinned local HappyView
-v2.13.0 build. Your existing PDS remains the identity and OAuth server;
+The preferred own-PDS proof now uses a pinned local HappyView v2.13.0 backend.
+The backend stays unmodified; an isolated frontend-only patch supplies a
+separate OAuth client ID when the UI is reached through the tailnet. Your
+existing PDS remains the identity and OAuth server;
 HappyView is a separate loopback-only `space_host` backed by private SQLite.
 No DID document, Comail service, or production repository changes are needed
 for this proof.
@@ -137,6 +139,19 @@ Build and start the exact loopback instance:
 Open `http://127.0.0.1:39090/login`, sign in as `scottlanoue.com`, and approve
 the normal AT Protocol OAuth request at your current PDS. In another terminal,
 capture the HttpOnly local session without developer tools:
+
+For a browser on Scott's tailnet, the same loopback-bound process may instead
+advertise the allowlisted standard-port HTTPS origin by starting it with
+`HAPPYVIEW_PUBLIC_URL=https://little-mac.lobster-hake.ts.net`. Serve the
+`/comail-pds-lab` path through Tailscale to `http://127.0.0.1:39090`; the
+separate base-path frontend is installed under `web-tailnet`. Do not enable
+Funnel: the pinned frontend remains an alpha lab surface.
+
+Because an AT Protocol authorization server must fetch the client metadata
+from public HTTPS, a tailnet build also accepts `HAPPYVIEW_OAUTH_CLIENT_ID` at
+build time. It is compiled only into the tailnet frontend and must identify a
+non-secret JSON document whose only redirect URI is the tailnet callback. The
+app, callbacks, session cookies, mailbox records, and blobs remain tailnet-only.
 
 ```bash
 go run ./cmd/comail-pds-lab capture-happyview-session \

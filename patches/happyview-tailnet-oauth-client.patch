@@ -1,0 +1,27 @@
+diff --git a/web/src/lib/auth-context.tsx b/web/src/lib/auth-context.tsx
+index 440be6f..bc48435 100644
+--- a/web/src/lib/auth-context.tsx
++++ b/web/src/lib/auth-context.tsx
+@@ -21,6 +21,8 @@ const AuthContext = createContext<AuthContextType>({
+   error: null,
+ })
+ 
++const oauthClientId = process.env.NEXT_PUBLIC_OAUTH_CLIENT_ID || ""
++
+ export function AuthProvider({ children }: { children: React.ReactNode }) {
+   const [did, setDid] = useState<string | null>(null)
+   const [loading, setLoading] = useState(true)
+@@ -65,7 +67,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
+   const login = useCallback(async (handle: string) => {
+     setError(null)
+ 
+-    const resp = await fetch(`${process.env.NEXT_PUBLIC_BASE_PATH || ""}/auth/login?handle=${encodeURIComponent(handle)}`, {
++    const params = new URLSearchParams({ handle })
++    if (oauthClientId) {
++      params.set("client_id", oauthClientId)
++    }
++
++    const resp = await fetch(`${process.env.NEXT_PUBLIC_BASE_PATH || ""}/auth/login?${params}`, {
+       credentials: "same-origin",
+     })
+ 

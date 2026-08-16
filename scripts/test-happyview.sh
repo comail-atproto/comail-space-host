@@ -53,6 +53,11 @@ rustdoc_path="$(rustup which --toolchain "$toolchain" rustdoc)"
 
   live_origin="http://127.0.0.1:39090"
   live_secret="$state_root/runtime/session-secret"
+  if curl --fail --silent --show-error --max-time 2 "$live_origin/" >/dev/null 2>&1; then
+    :
+  elif curl --fail --silent --show-error --max-time 2 "$live_origin/comail-pds-lab/" >/dev/null 2>&1; then
+    live_origin="$live_origin/comail-pds-lab"
+  fi
   if [[ -f "$live_secret" ]] && curl --fail --silent --show-error --max-time 2 "$live_origin/" >/dev/null; then
     HAPPYVIEW_LIVE_ORIGIN="$live_origin" \
       HAPPYVIEW_LIVE_SESSION_SECRET_FILE="$live_secret" \

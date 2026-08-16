@@ -6,6 +6,9 @@ lab_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 lock_file="$lab_root/providers/happyview.lock"
 state_root="$lab_root/state/happyview"
 install_root="$state_root/install"
+tailnet_base_path="/comail-pds-lab"
+tailnet_oauth_client_id="${HAPPYVIEW_OAUTH_CLIENT_ID:-}"
+oauth_patch="$lab_root/patches/happyview-tailnet-oauth-client.patch"
 
 read_lock() {
   local key="$1"
@@ -47,6 +50,8 @@ if [[ "$actual_commit" != "$commit" || -n "$(git -C "$build_root" status --porce
   echo "HappyView checkout did not match the pinned clean commit" >&2
   exit 1
 fi
+git -C "$build_root" apply --check "$oauth_patch"
+git -C "$build_root" apply "$oauth_patch"
 
 rustup toolchain install "$toolchain" --profile minimal
 rustc_path="$(rustup which --toolchain "$toolchain" rustc)"
@@ -55,7 +60,13 @@ rustdoc_path="$(rustup which --toolchain "$toolchain" rustdoc)"
 (
   cd "$build_root/web"
   npm ci
-  NEXT_PUBLIC_BASE_PATH='' npm run build
+  NEXT_PUBLIC_BASE_PATH='' NEXT_PUBLIC_OAUTH_CLIENT_ID='' npm run build
+  mkdir "$build_root/web-loopback"
+  cp -R out/. "$build_root/web-loopback/"
+  NEXT_PUBLIC_BASE_PATH="$tailnet_base_path" \
+    NEXT_PUBLIC_OAUTH_CLIENT_ID="$tailnet_oauth_client_id" npm run build
+  mkdir "$build_root/web-tailnet"
+  cp -R out/. "$build_root/web-tailnet/"
 )
 (
   cd "$build_root"
@@ -69,9 +80,10 @@ if [[ -e "$stage" ]]; then
   echo "stale HappyView staging directory exists: $stage" >&2
   exit 1
 fi
-mkdir -p "$stage/bin" "$stage/web"
+mkdir -p "$stage/bin" "$stage/web" "$stage/web-tailnet"
 install -m 0700 "$build_root/target/release/happyview" "$stage/bin/happyview"
-cp -R "$build_root/web/out/." "$stage/web/"
+cp -R "$build_root/web-loopback/." "$stage/web/"
+cp -R "$build_root/web-tailnet/." "$stage/web-tailnet/"
 cp -R "$build_root/migrations" "$stage/migrations"
 chmod -R go-rwx "$stage"
 {

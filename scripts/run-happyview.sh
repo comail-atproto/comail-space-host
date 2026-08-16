@@ -7,10 +7,25 @@ state_root="$lab_root/state/happyview"
 install_root="$state_root/install"
 runtime_root="$state_root/runtime"
 binary="$install_root/bin/happyview"
-static_dir="$install_root/web"
 session_secret_file="$runtime_root/session-secret"
 token_key_file="$runtime_root/token-encryption-key"
 database_file="$runtime_root/happyview.sqlite"
+public_url="${HAPPYVIEW_PUBLIC_URL:-http://127.0.0.1:39090}"
+
+case "$public_url" in
+  http://127.0.0.1:39090)
+    base_path=""
+    static_dir="$install_root/web"
+    ;;
+  https://little-mac.lobster-hake.ts.net)
+    base_path="/comail-pds-lab"
+    static_dir="$install_root/web-tailnet"
+    ;;
+  *)
+    echo "refusing HappyView public URL outside the loopback or approved tailnet origins: $public_url" >&2
+    exit 1
+    ;;
+esac
 
 if [[ ! -x "$binary" || ! -d "$static_dir" ]]; then
   echo "HappyView is not built; run ./scripts/build-happyview.sh first" >&2
@@ -49,7 +64,8 @@ create_secret "$token_key_file" 32
 
 export DATABASE_URL="sqlite://${database_file}?mode=rwc"
 export DATABASE_BACKEND="sqlite"
-export PUBLIC_URL="http://127.0.0.1:39090"
+export PUBLIC_URL="$public_url"
+export BASE_PATH="$base_path"
 export HOST="127.0.0.1"
 export PORT="39090"
 export STATIC_DIR="$static_dir"
