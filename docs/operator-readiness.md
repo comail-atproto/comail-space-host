@@ -29,11 +29,23 @@ Observed 2026-08-16; no production state was changed.
   are denied.
 - The real running HTTP adapter imports and rebuilds a synthetic mailbox, and a
   second signed synthetic identity is denied access to its private records.
+- The closed legacy inboxd SQLite mailbox was copied read-only from
+  `atmos-inbox` with matching SHA-256, then imported into the operator's
+  `default` HappyView mailbox space: 3 folders, 15 live messages, 3 expunged
+  messages skipped, and 13,863 RFC 5322 bytes. Full readback and a fresh SQLite
+  projection passed, and a second run created nothing while verifying the same
+  15 messages.
+- The resulting space is owned and authorized by the operator DID, has one
+  member, uses `member-list` minting, and keeps both membership and records
+  non-public. The tailnet UI uses a frontend-only OAuth client shim; HappyView
+  itself remains bound to loopback.
 
-## Remaining operator artifact
+## Remaining optional comparison artifact
 
-The remaining private actions are one interactive PDS OAuth approval and a
-dedicated member-scoped Stalwart app-password.
+The interactive PDS OAuth approval and legacy SQLite authority proof are
+complete. A dedicated member-scoped Stalwart app-password is needed only to
+archive and compare the current Stalwart/JMAP projection against the migrated
+legacy mailbox.
 It should be named for this export, exposed only to Vandelay as
 `VANDELAY_PASSWORD`, and
 revoked after the private archive is captured. The wrapper can load it from an
@@ -42,7 +54,7 @@ history. The lab found no existing
 credential in the local Keychain and cannot decrypt the production SOPS file;
 it deliberately did not substitute a broad administrator secret.
 
-Once that one-time credential is available, run `archive-stalwart.sh`, then
+If that comparison is desired, run `archive-stalwart.sh`, then
 `dry-run-vandelay` and `prove-vandelay`. The resulting archive and proof remain
 under ignored, mode-0700 `state/`; the source archive is retained as rollback.
 

@@ -33,6 +33,36 @@ func TestHappyViewProofRequiresExplicitProviderAndCommit(t *testing.T) {
 	}
 }
 
+func TestHappyViewProofRequiresExactlyOneClosedSource(t *testing.T) {
+	valid := happyViewProofOptions{
+		Provider:   "happyview",
+		Commit:     true,
+		Archive:    filepath.Join(t.TempDir(), "archive.sqlite"),
+		Origin:     "http://127.0.0.1:39090",
+		DID:        "did:plc:test",
+		SpaceKey:   "primary",
+		Epoch:      happyViewCertifiedEpoch,
+		CookieFile: filepath.Join(t.TempDir(), "cookie"),
+		WorkDir:    filepath.Join(t.TempDir(), "new-proof"),
+	}
+	missing := valid
+	missing.Archive = ""
+	if err := validateHappyViewProofOptions(missing); err == nil {
+		t.Fatal("accepted missing source")
+	}
+	both := valid
+	both.Snapshot = filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if err := validateHappyViewProofOptions(both); err == nil {
+		t.Fatal("accepted both archive and snapshot")
+	}
+	snapshot := valid
+	snapshot.Archive = ""
+	snapshot.Snapshot = filepath.Join(t.TempDir(), "snapshot.sqlite")
+	if err := validateHappyViewProofOptions(snapshot); err != nil {
+		t.Fatalf("rejected one closed snapshot: %v", err)
+	}
+}
+
 func TestHappyViewCaptureHandlerStoresOnlyExpectedCookie(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {

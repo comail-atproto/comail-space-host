@@ -204,6 +204,7 @@ type happyViewProofOptions struct {
 	Provider   string
 	Commit     bool
 	Archive    string
+	Snapshot   string
 	Origin     string
 	DID        string
 	SpaceKey   string
@@ -219,6 +220,9 @@ func validateHappyViewProofOptions(opts happyViewProofOptions) error {
 	if opts.Epoch != happyViewCertifiedEpoch {
 		return errors.New("prove-happyview requires the certified HappyView epoch")
 	}
+	if (opts.Archive == "") == (opts.Snapshot == "") {
+		return errors.New("prove-happyview requires exactly one closed --archive or --snapshot")
+	}
 	if !strings.HasPrefix(opts.DID, "did:") || strings.ContainsAny(opts.DID, "/?#") || opts.SpaceKey == "" {
 		return errors.New("prove-happyview requires an exact DID and space key")
 	}
@@ -233,7 +237,11 @@ func validateHappyViewProofOptions(opts happyViewProofOptions) error {
 			return errors.New("prove-happyview origin must be loopback-only")
 		}
 	}
-	for name, path := range map[string]string{"archive": opts.Archive, "cookie-file": opts.CookieFile, "work-dir": opts.WorkDir} {
+	sourceName, sourcePath := "archive", opts.Archive
+	if opts.Snapshot != "" {
+		sourceName, sourcePath = "snapshot", opts.Snapshot
+	}
+	for name, path := range map[string]string{sourceName: sourcePath, "cookie-file": opts.CookieFile, "work-dir": opts.WorkDir} {
 		if !filepath.IsAbs(path) || path == string(filepath.Separator) {
 			return fmt.Errorf("prove-happyview requires an absolute --%s", name)
 		}
@@ -247,6 +255,7 @@ func runProveHappyView(ctx context.Context, args []string) error {
 	flags.StringVar(&opts.Provider, "provider", "", "must be the literal happyview to confirm the destination")
 	flags.BoolVar(&opts.Commit, "commit", false, "perform provider writes after all target checks")
 	flags.StringVar(&opts.Archive, "archive", "", "absolute path to a closed Vandelay archive")
+	flags.StringVar(&opts.Snapshot, "snapshot", "", "absolute path to a closed legacy inboxd SQLite snapshot")
 	flags.StringVar(&opts.Origin, "origin", "http://127.0.0.1:39090", "exact loopback HappyView origin")
 	flags.StringVar(&opts.DID, "did", "", "exact mailbox DID authenticated in HappyView")
 	flags.StringVar(&opts.SpaceKey, "space-key", "primary", "exact mailbox space key")
@@ -273,11 +282,24 @@ func runProveHappyView(ctx context.Context, args []string) error {
 	if err := os.Mkdir(opts.WorkDir, 0o700); err != nil {
 		return fmt.Errorf("create proof directory: %w", err)
 	}
-	snapshot, err := vandelayimport.Open(opts.Archive)
-	if err != nil {
-		return err
+	var snapshot migrate.SourceSnapshot
+	var closeSnapshot func() error
+	if opts.Snapshot != "" {
+		legacySnapshot, openErr := sqliteimport.Open(opts.Snapshot)
+		if openErr != nil {
+			return openErr
+		}
+		snapshot = legacySnapshot
+		closeSnapshot = legacySnapshot.Close
+	} else {
+		archiveSnapshot, openErr := vandelayimport.Open(opts.Archive)
+		if openErr != nil {
+			return openErr
+		}
+		snapshot = archiveSnapshot
+		closeSnapshot = archiveSnapshot.Close
 	}
-	defer snapshot.Close()
+	defer closeSnapshot()
 	migration, err := migrate.Run(ctx, snapshot, repo, migrate.Options{RecipientDID: opts.DID, SpaceKey: opts.SpaceKey, Commit: true})
 	if err != nil {
 		return err

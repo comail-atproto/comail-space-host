@@ -182,7 +182,13 @@ the Comail adapter/contract tests. When the local runtime is already running,
 it also performs a real synthetic mailbox import, full readback/rebuild, and
 second-identity denial through its HTTP routes. The certificate is
 `providers/happyview-certification.json`. The pinned frontend currently reports
-21 npm audit findings, so the lab remains loopback-only.
+21 npm audit findings, so the UI remains restricted to loopback or the private
+tailnet Serve route; Funnel and public app exposure stay prohibited.
+
+For a closed legacy inboxd SQLite snapshot, `prove-happyview` accepts
+`--snapshot` instead of `--archive`; the two source flags are mutually
+exclusive and pass through the same destination checks, idempotent writer,
+full readback, and fresh-projection rebuild.
 
 ## Current rsky result
 
