@@ -190,6 +190,35 @@ For a closed legacy inboxd SQLite snapshot, `prove-happyview` accepts
 exclusive and pass through the same destination checks, idempotent writer,
 full readback, and fresh-projection rebuild.
 
+HappyView's `/dashboard/records/` page lists ordinary public-repository
+records, not permissioned-space records, so an imported mailbox correctly
+appears empty there. The lab includes a separate read-only mailbox viewer for
+the private space. It accepts only the existing signed HappyView browser
+cookie, verifies that `/auth/me` is the exact mailbox DID, pins the exact space,
+and reads records and RFC 5322 blobs through HappyView's authenticated XRPC
+routes. It does not read HappyView's SQLite database or hold another session.
+
+With the tailnet HappyView process running, start the loopback-only viewer:
+
+```bash
+./scripts/run-mailbox-viewer.sh did:plc:dy67wyyakm7u4v2lthy5zwbn
+```
+
+In another terminal, attach only its loopback listener to a distinct tailnet
+path, preserving the existing root and HappyView routes:
+
+```bash
+tailscale serve --bg --https=443 \
+  --set-path=/comail-pds-mailbox --yes http://127.0.0.1:39093
+```
+
+Then open
+`https://little-mac.lobster-hake.ts.net/comail-pds-mailbox/` in the browser
+already signed into the isolated HappyView instance. The viewer sends
+`Cache-Control: no-store`, a restrictive content security policy, refuses
+non-GET methods, and returns 401 without the HappyView session. Keep this route
+tailnet-only; never enable Funnel.
+
 ## Current rsky result
 
 The unmodified pinned rsky epoch is **not certified for mailbox writes**: its
