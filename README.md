@@ -219,6 +219,46 @@ already signed into the isolated HappyView instance. The viewer sends
 non-GET methods, and returns 401 without the HappyView session. Keep this route
 tailnet-only; never enable Funnel.
 
+## Shadow delivery agent
+
+The lab also exposes a narrow provider-adapter protocol for a future Comail
+relay shadow. The agent holds the provider session locally; the relay receives
+only a separate bearer token and an exact provider/repository/space binding.
+It supports two authenticated POSTs: a capability probe and an idempotent
+store-plus-readback operation. It never accepts a target from SMTP input.
+
+Live writes require both an explicit provider and `--commit`, and the listener
+is restricted to exact IPv4 loopback:
+
+```bash
+go run ./cmd/comail-pds-agent \
+  --provider happyview --commit \
+  --did did:plc:example \
+  --cookie-file "$PWD/state/operator/happyview-cookie" \
+  --token-file "$PWD/state/operator/shadow-agent-token"
+```
+
+The current operator proof used a separate private validation space, wrote one
+synthetic RFC 5322 message twice, and received byte-exact authenticated
+readback receipts both times with the same fingerprint. The ordinary `default`
+mailbox space was not used for that write. The long-running default-space agent
+has passed its live capability probe but remains disconnected from production.
+
+Provider support is contract-based, not name-based:
+
+- HappyView: live adapter and isolated write/readback proof complete.
+- Habitat: the separate ODS proof remains useful; it needs a small adapter that
+  satisfies this repository contract before it can receive shadow mail.
+- Blacksky/rsky: the new hosted implementation reports permissioned-spaces
+  interoperability, but this lab certifies writes only against its pinned,
+  patched disposable rsky build. Hosted rsky is not eligible for shadow writes
+  until an authenticated conformance run passes against its exact deployed
+  epoch.
+- Other PDS hosts: eligible after proving private records, referenced blobs,
+  idempotent writes, authenticated read-after-write, exact target binding, and
+  redirect refusal. Atomic state writes are additionally required before any
+  future authority cutover.
+
 ## Current rsky result
 
 The unmodified pinned rsky epoch is **not certified for mailbox writes**: its

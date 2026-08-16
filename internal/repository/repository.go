@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
 )
@@ -26,10 +27,26 @@ type Target struct {
 }
 
 func (t Target) ValidateFor(recipientDID string) error {
-	if t.SpaceURI == "" || t.RepoDID == "" || t.Epoch == "" {
+	if t.ProviderOrigin == "" || t.SpaceURI == "" || t.RepoDID == "" || t.Epoch == "" {
 		return ErrTarget
 	}
 	if recipientDID != "" && t.RepoDID != recipientDID {
+		return ErrTarget
+	}
+	legacyPrefix := "at://" + t.RepoDID + "/space/"
+	standardPrefix := "ats://" + t.RepoDID + "/"
+	spaceName := t.SpaceURI
+	switch {
+	case strings.HasPrefix(spaceName, legacyPrefix):
+		spaceName = strings.TrimPrefix(spaceName, legacyPrefix)
+	case strings.HasPrefix(spaceName, standardPrefix):
+		spaceName = strings.TrimPrefix(spaceName, standardPrefix)
+	default:
+		return ErrTarget
+	}
+	spaceType, spaceKey, found := strings.Cut(spaceName, "/")
+	if !found || spaceType == "" || !strings.Contains(spaceType, ".") || spaceKey == "" ||
+		strings.ContainsAny(spaceName, "?# \t\r\n") || strings.Contains(spaceKey, "/") || spaceKey == "." || spaceKey == ".." {
 		return ErrTarget
 	}
 	return nil

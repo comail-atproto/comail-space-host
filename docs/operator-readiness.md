@@ -39,6 +39,14 @@ Observed 2026-08-16; no production state was changed.
   member, uses `member-list` minting, and keeps both membership and records
   non-public. The tailnet UI uses a frontend-only OAuth client shim; HappyView
   itself remains bound to loopback.
+- A separate owner-only shadow-agent token now fronts the exact default-space
+  target through a loopback listener and private tailnet Serve path. Its live
+  capability probe reports private records, referenced blobs, idempotent
+  writes, authenticated read-after-write, and atomic state writes.
+- A second short-lived agent created an isolated `shadow-validation` private
+  space, wrote one synthetic message twice, and verified identical byte-exact
+  receipts. It was then stopped. The test did not add synthetic mail to the
+  operator's normal `default` mailbox.
 
 ## Remaining optional comparison artifact
 
