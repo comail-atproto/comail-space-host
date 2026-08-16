@@ -17,14 +17,16 @@ import (
 )
 
 const (
-	createSpaceNSID = "com.atproto.simplespace.createSpace"
-	listSpacesNSID  = "com.atproto.space.listSpaces"
-	uploadBlobNSID  = "com.atproto.repo.uploadBlob"
-	applyWritesNSID = "com.atproto.space.applyWrites"
-	putRecordNSID   = "com.atproto.space.putRecord"
-	getRecordNSID   = "com.atproto.space.getRecord"
-	listRecordsNSID = "com.atproto.space.listRecords"
-	getBlobNSID     = "com.atproto.space.getBlob"
+	CertifiedEpoch   = "2918753b1f32ae99022bc2c5cc9a0cc645095337"
+	CertifiedPatchID = "rsky-atomic-referenced-blobs-v1"
+	createSpaceNSID  = "com.atproto.simplespace.createSpace"
+	listSpacesNSID   = "com.atproto.space.listSpaces"
+	uploadBlobNSID   = "com.atproto.repo.uploadBlob"
+	applyWritesNSID  = "com.atproto.space.applyWrites"
+	putRecordNSID    = "com.atproto.space.putRecord"
+	getRecordNSID    = "com.atproto.space.getRecord"
+	listRecordsNSID  = "com.atproto.space.listRecords"
+	getBlobNSID      = "com.atproto.space.getBlob"
 
 	maxJSONResponse = 2 * 1024 * 1024
 	maxListRecords  = 1_000_000
@@ -44,6 +46,7 @@ type Config struct {
 	AllowHTTP          bool
 	AllowWrites        bool
 	CertificationProbe bool
+	CertificationPatch string
 }
 
 type Client struct {
@@ -52,6 +55,7 @@ type Client struct {
 	epoch       string
 	doer        Doer
 	allowWrites bool
+	certified   bool
 }
 
 type ProviderError struct {
@@ -80,20 +84,19 @@ func New(cfg Config, doer Doer) (*Client, error) {
 	if cfg.Epoch == "" {
 		return nil, errors.New("rsky: pinned provider epoch is required")
 	}
-	if cfg.AllowWrites && !cfg.CertificationProbe {
-		return nil, fmt.Errorf("%w: pinned rsky epoch is not certified for mailbox writes", repository.ErrUnsupported)
+	originURL, _ := url.Parse(origin)
+	certified := cfg.CertificationProbe && cfg.AllowHTTP && originURL.Scheme == "http" && isLoopbackHost(originURL.Hostname()) && cfg.Epoch == CertifiedEpoch && cfg.CertificationPatch == CertifiedPatchID
+	if cfg.AllowWrites && !certified {
+		return nil, fmt.Errorf("%w: rsky writes require the exact certified lab epoch and patch", repository.ErrUnsupported)
 	}
-	return &Client{origin: origin, did: cfg.DID, epoch: cfg.Epoch, doer: doer, allowWrites: cfg.AllowWrites}, nil
+	return &Client{origin: origin, did: cfg.DID, epoch: cfg.Epoch, doer: doer, allowWrites: cfg.AllowWrites, certified: certified}, nil
 }
 
 func (c *Client) ProviderID() string { return "rsky@" + c.epoch }
 
 func (c *Client) Capabilities(context.Context) (repository.Capabilities, error) {
 	return repository.Capabilities{
-		// The pinned epoch commits space records before referenced-blob
-		// promotion. Until that ordering is fixed and regression-tested, the
-		// mailbox authority contract must treat applyWrites as non-atomic.
-		AtomicApplyWrites: false,
+		AtomicApplyWrites: c.certified,
 		CompareAndSwap:    true,
 		ReferencedBlobs:   true,
 		RepoOplog:         true,

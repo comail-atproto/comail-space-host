@@ -239,6 +239,7 @@ ORDER BY c.name, m.uid`, inReplyExpr, referencesExpr)
 		keywords := flags.keywords()
 		imported := mailbox.ImportedMessage{
 			RecipientDID:  space.User,
+			SourceKey:     "legacy:" + legacyRKey,
 			Raw:           append([]byte(nil), raw...),
 			Mailbox:       mailboxName,
 			MessageID:     messageID,

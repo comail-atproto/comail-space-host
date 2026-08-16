@@ -30,17 +30,19 @@ Full rebuild requires only authenticated `listRecords` and `getBlob`. Oplog,
 CAR export, and notifications are certified accelerators, not correctness
 requirements.
 
-The current pinned rsky epoch does not satisfy operation 3 for records which
-reference blobs: the record transaction commits before referenced-blob
-verification. Normal rsky write mode is therefore disabled in code. This is a
-provider certification result, not a reason to weaken the mailbox contract.
+The unmodified pinned rsky epoch does not satisfy operation 3 for records which
+reference blobs. The lab's exact pinned patch verifies/promotes referenced
+blobs before the record transaction, and a regression proves rejected writes
+leave no record. Write mode requires that exact epoch+patch certification and
+remains disabled for normal or hosted rsky clients.
 
 ## Data model
 
 ### `email.atmos.message` v1
 
 Immutable. The rkey is a versioned SHA-256 delivery fingerprint over recipient
-DID and canonical bytes. It contains the blob reference, byte hash and size,
+DID, stable source identity, and canonical bytes. The source identity prevents
+distinct entries with identical bytes from collapsing. It contains the blob reference, byte hash and size,
 initial mailbox, optional delivery timestamp, and optional RFC 5322 threading
 metadata. Legacy SQLite imports leave delivery time absent rather than inventing
 one from the untrusted message `Date` header.
@@ -49,8 +51,9 @@ one from the untrusted message `Date` header.
 
 Mutable and deliberately experimental until provider CAS tests pass. It holds
 folder IDs, JMAP-compatible keywords, IMAP delete-pending state, tombstone
-state, a logical revision, and optional migration identity (`uid`,
-`uidValidity`, `modSeq`). Updates require the prior record CID.
+state, a logical revision, and an optional single-folder migration identity
+(`uid`, `uidValidity`, `modSeq`). Multi-folder JMAP entries receive stable
+per-folder identities when a projection is rebuilt. Updates require the prior record CID.
 
 ### `email.atmos.folder` v0
 
@@ -73,10 +76,11 @@ For the future authority flip, but not enabled by this lab:
 
 No accepted message silently falls back to SQLite or another provider.
 
-## SQLite migration
+## Source migration
 
-Migration reads a consistent snapshot in immutable/query-only mode. It streams
-live messages without writing mail content to an intermediate manifest:
+Migration reads either a consistent legacy Comail snapshot or a closed
+one-account Vandelay archive in immutable/query-only mode. It streams live
+messages without writing mail content to an intermediate manifest:
 
 1. enumerate folders and non-expunged messages for one exact DID/space;
 2. validate JSON columns, sizes, hashes, and RFC 5322 presence;

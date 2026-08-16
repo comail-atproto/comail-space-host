@@ -44,6 +44,7 @@ type MessageRecord struct {
 	SHA256              string   `json:"sha256"`
 	Size                int64    `json:"size"`
 	DeliveryFingerprint string   `json:"deliveryFingerprint"`
+	SourceKey           string   `json:"sourceKey,omitempty"`
 	InitialMailbox      string   `json:"initialMailbox"`
 	DeliveredAt         string   `json:"deliveredAt,omitempty"`
 	SourceMessageID     string   `json:"sourceMessageId,omitempty"`
@@ -92,8 +93,10 @@ type MessagePair struct {
 
 type ImportedMessage struct {
 	RecipientDID  string
+	SourceKey     string
 	Raw           []byte
 	Mailbox       string
+	Mailboxes     []string
 	MessageID     string
 	MessageDate   time.Time
 	InReplyTo     string
@@ -107,9 +110,19 @@ type ImportedMessage struct {
 }
 
 func DeliveryFingerprint(recipientDID string, raw []byte) string {
+	return deliveryFingerprint(recipientDID, "", raw)
+}
+
+func ImportedFingerprint(src ImportedMessage) string {
+	return deliveryFingerprint(src.RecipientDID, src.SourceKey, src.Raw)
+}
+
+func deliveryFingerprint(recipientDID, sourceKey string, raw []byte) string {
 	h := sha256.New()
-	_, _ = h.Write([]byte("comail-habitat-delivery-v1\x00"))
+	_, _ = h.Write([]byte("comail-habitat-delivery-v2\x00"))
 	_, _ = h.Write([]byte(recipientDID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(sourceKey))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write(raw)
 	return fingerprintPrefix + hex.EncodeToString(h.Sum(nil))
@@ -130,9 +143,42 @@ func NewMessagePair(src ImportedMessage, blob BlobRef) (MessagePair, error) {
 	if len(src.Raw) > MaxRawMessageBytes {
 		return MessagePair{}, fmt.Errorf("%w: got %d bytes, maximum %d", ErrMessageTooLarge, len(src.Raw), MaxRawMessageBytes)
 	}
-	if src.Mailbox == "" {
-		src.Mailbox = "INBOX"
+	if len(src.SourceKey) > 512 {
+		return MessagePair{}, fmt.Errorf("%w: source key exceeds 512 bytes", ErrInvalidRecord)
 	}
+	mailboxes := normalizeStrings(src.Mailboxes)
+	if src.Mailbox != "" {
+		mailboxes = normalizeStrings(append(mailboxes, src.Mailbox))
+	}
+	if len(mailboxes) == 0 {
+		mailboxes = []string{"INBOX"}
+	}
+	if len(mailboxes) > 32 {
+		return MessagePair{}, fmt.Errorf("%w: message belongs to more than 32 mailboxes", ErrInvalidRecord)
+	}
+	for _, name := range mailboxes {
+		if len(name) > 255 {
+			return MessagePair{}, fmt.Errorf("%w: mailbox name exceeds 255 bytes", ErrInvalidRecord)
+		}
+	}
+	if len(src.MessageID) > 998 || len(src.InReplyTo) > 998 || len(src.References) > 100 {
+		return MessagePair{}, fmt.Errorf("%w: RFC 5322 metadata exceeds contract limits", ErrInvalidRecord)
+	}
+	for _, reference := range src.References {
+		if len(reference) > 998 {
+			return MessagePair{}, fmt.Errorf("%w: reference exceeds 998 bytes", ErrInvalidRecord)
+		}
+	}
+	keywords := normalizeStrings(src.Keywords)
+	if len(keywords) > 128 {
+		return MessagePair{}, fmt.Errorf("%w: more than 128 keywords", ErrInvalidRecord)
+	}
+	for _, keyword := range keywords {
+		if len(keyword) > 255 {
+			return MessagePair{}, fmt.Errorf("%w: keyword exceeds 255 bytes", ErrInvalidRecord)
+		}
+	}
+	src.Mailbox = mailboxes[0]
 	stateTime := src.DeliveredAt
 	if stateTime.IsZero() {
 		// Legacy SQLite rows do not carry a trustworthy delivery/update time.
@@ -146,13 +192,14 @@ func NewMessagePair(src ImportedMessage, blob BlobRef) (MessagePair, error) {
 	if blob.Ref.Link == "" || blob.MIMEType != MessageMIMEType || blob.Size != int64(len(src.Raw)) {
 		return MessagePair{}, fmt.Errorf("%w: blob reference does not match message", ErrInvalidRecord)
 	}
-	rkey := DeliveryFingerprint(src.RecipientDID, src.Raw)
+	rkey := ImportedFingerprint(src)
 	message := MessageRecord{
 		Type:                MessageCollection,
 		Raw:                 blob,
 		SHA256:              RawSHA256(src.Raw),
 		Size:                int64(len(src.Raw)),
 		DeliveryFingerprint: rkey,
+		SourceKey:           src.SourceKey,
 		InitialMailbox:      src.Mailbox,
 		SourceMessageID:     src.MessageID,
 		InReplyTo:           src.InReplyTo,
@@ -167,16 +214,39 @@ func NewMessagePair(src ImportedMessage, blob BlobRef) (MessagePair, error) {
 	state := MessageStateRecord{
 		Type:          MessageStateCollection,
 		Message:       rkey,
-		MailboxIDs:    []string{FolderRKey(src.Mailbox)},
-		Keywords:      normalizeStrings(src.Keywords),
+		MailboxIDs:    folderRKeys(mailboxes),
+		Keywords:      keywords,
 		DeletePending: src.DeletePending,
 		Revision:      1,
 		UpdatedAt:     stateTime.UTC().Format(time.RFC3339Nano),
-		Projection: ProjectionIdentity{
-			UID: src.UID, UIDValidity: src.UIDValidity, ModSeq: src.ModSeq,
-		},
+	}
+	// UID is folder-local. Preserve the legacy identity only when the message
+	// has exactly one mailbox; multi-mailbox JMAP sources get stable identities
+	// when a standards projection is rebuilt.
+	if len(mailboxes) == 1 {
+		state.Projection = ProjectionIdentity{UID: src.UID, UIDValidity: src.UIDValidity, ModSeq: src.ModSeq}
 	}
 	return MessagePair{RKey: rkey, Message: message, State: state}, nil
+}
+
+func folderRKeys(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, FolderRKey(name))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// StableUIDValidity derives a non-zero projection identity from the account
+// and full mailbox path. It is deterministic across clean rebuilds.
+func StableUIDValidity(recipientDID, mailboxName string) uint32 {
+	sum := sha256.Sum256([]byte("comail-uidvalidity-v1\x00" + recipientDID + "\x00" + mailboxName))
+	value := uint32(sum[0])<<24 | uint32(sum[1])<<16 | uint32(sum[2])<<8 | uint32(sum[3])
+	if value == 0 {
+		return 1
+	}
+	return value
 }
 
 func ValidateStoredMessage(recipientDID, rkey string, record MessageRecord, raw []byte) error {
@@ -186,7 +256,7 @@ func ValidateStoredMessage(recipientDID, rkey string, record MessageRecord, raw 
 	if len(raw) == 0 || len(raw) > MaxRawMessageBytes {
 		return fmt.Errorf("%w: raw size %d", ErrIntegrity, len(raw))
 	}
-	wantFingerprint := DeliveryFingerprint(recipientDID, raw)
+	wantFingerprint := deliveryFingerprint(recipientDID, record.SourceKey, raw)
 	if rkey != wantFingerprint || record.DeliveryFingerprint != wantFingerprint {
 		return fmt.Errorf("%w: delivery fingerprint mismatch", ErrIntegrity)
 	}

@@ -6,10 +6,11 @@ mailbox, routing, or flag changes are authorized by passing these gates.
 ## Gate A — provider capability
 
 - [x] Pinned rsky source was resolved and audited at the locked commit.
-- [ ] rsky verifies referenced blobs before committing space records. **Blocked
-      at the pinned epoch: commit currently happens first.**
-- [ ] Pinned rsky build and upstream space integration suite pass after the
-      authority-critical source audit.
+- [x] The isolated pinned rsky build plus the exact lab patch verifies
+      referenced blobs before committing space records and carries a residual
+      record regression. The unmodified upstream epoch still fails this gate.
+- [x] All 16 space integration tests pass after applying the patch, including
+      an exact Comail mailbox authority round-trip and cross-account blob deny.
 - [ ] OAuth grants enforce the requested space, actions, and collections.
 - [ ] Refresh survives restart and concurrent refresh is single-flight.
 - [ ] Revocation stops reads and writes within the declared SLO.
@@ -36,9 +37,8 @@ mailbox, routing, or flag changes are authorized by passing these gates.
       stable IMAP identity hints.
 - [x] Deleted/expunged source rows are not resurrected.
 - [ ] Poison records are quarantined without wedging other messages.
-- [ ] Multi-folder messages and post-migration UID allocation are specified;
-      the current importer intentionally accepts exactly one source folder per
-      message and requires preserved projection identity.
+- [x] Multi-folder JMAP messages retain every membership; fresh projections
+      allocate stable per-folder UIDs when the source has no IMAP identity.
 
 ## Gate D — operator-only readiness
 

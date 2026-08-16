@@ -21,6 +21,7 @@ import (
 	"github.com/comail-atproto/comail-pds-lab/internal/projection"
 	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
 	"github.com/comail-atproto/comail-pds-lab/internal/synthetic"
+	"github.com/comail-atproto/comail-pds-lab/internal/vandelayimport"
 )
 
 const syntheticDID = "did:plc:comailpdslabsynthetic"
@@ -50,6 +51,12 @@ func run(ctx context.Context, args []string) error {
 		return runInspect(ctx, args[1:])
 	case "dry-run":
 		return runDryRun(ctx, args[1:])
+	case "inspect-vandelay":
+		return runInspectVandelay(ctx, args[1:])
+	case "dry-run-vandelay":
+		return runDryRunVandelay(ctx, args[1:])
+	case "prove-vandelay":
+		return runProveVandelay(ctx, args[1:])
 	case "synthetic-proof":
 		return runSyntheticProof(ctx, args[1:])
 	case "vault-init":
@@ -62,6 +69,92 @@ func run(ctx context.Context, args []string) error {
 	default:
 		return usageError()
 	}
+}
+
+func runProveVandelay(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("prove-vandelay", flag.ContinueOnError)
+	archivePath := flags.String("archive", "", "absolute path to a closed Vandelay archive")
+	did := flags.String("did", "", "exact mailbox DID")
+	spaceKey := flags.String("space-key", "primary", "exact mailbox space key")
+	workDir := flags.String("work-dir", "", "new absolute directory for proof artifacts")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(*workDir) || *workDir == string(filepath.Separator) {
+		return errors.New("prove-vandelay requires a new absolute --work-dir")
+	}
+	if err := os.Mkdir(*workDir, 0o700); err != nil {
+		return fmt.Errorf("create proof directory: %w", err)
+	}
+	snapshot, err := vandelayimport.Open(*archivePath)
+	if err != nil {
+		return err
+	}
+	defer snapshot.Close()
+	repo := memory.NewBackend().OwnerSession(*did)
+	migration, err := migrate.Run(ctx, snapshot, repo, migrate.Options{RecipientDID: *did, SpaceKey: *spaceKey, Commit: true})
+	if err != nil {
+		return err
+	}
+	projectionReport, err := projection.Rebuild(ctx, repo, migration.Target, filepath.Join(*workDir, "rebuilt-projection.sqlite"))
+	if err != nil {
+		return err
+	}
+	evidence := proofEvidence{Version: 1, Synthetic: false, Generated: time.Now().UTC().Format(time.RFC3339), Migration: migration, Projection: projectionReport, Passed: migration.Verification.Passed() && projectionReport.Passed()}
+	if err := writeExclusiveJSON(filepath.Join(*workDir, "evidence.json"), evidence); err != nil {
+		return err
+	}
+	if !evidence.Passed {
+		return errors.New("Vandelay proof did not pass")
+	}
+	return printJSON(evidence)
+}
+
+func runInspectVandelay(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("inspect-vandelay", flag.ContinueOnError)
+	archivePath := flags.String("archive", "", "absolute path to a closed Vandelay archive")
+	did := flags.String("did", "", "exact mailbox DID")
+	spaceKey := flags.String("space-key", "primary", "exact mailbox space key")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	snapshot, err := vandelayimport.Open(*archivePath)
+	if err != nil {
+		return err
+	}
+	defer snapshot.Close()
+	inventory, err := snapshot.Inspect(ctx, *did, *spaceKey)
+	if err != nil {
+		return err
+	}
+	return printJSON(inventory)
+}
+
+func runDryRunVandelay(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("dry-run-vandelay", flag.ContinueOnError)
+	archivePath := flags.String("archive", "", "absolute path to a closed Vandelay archive")
+	did := flags.String("did", "", "exact mailbox DID")
+	spaceKey := flags.String("space-key", "primary", "exact mailbox space key")
+	evidence := flags.String("evidence", "", "create-only path for redacted JSON evidence")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	snapshot, err := vandelayimport.Open(*archivePath)
+	if err != nil {
+		return err
+	}
+	defer snapshot.Close()
+	repo := memory.NewBackend().OwnerSession(*did)
+	report, err := migrate.Run(ctx, snapshot, repo, migrate.Options{RecipientDID: *did, SpaceKey: *spaceKey})
+	if err != nil {
+		return err
+	}
+	if *evidence != "" {
+		if err := migrate.WriteReport(*evidence, report); err != nil {
+			return err
+		}
+	}
+	return printJSON(report)
 }
 
 func runInspect(ctx context.Context, args []string) error {
@@ -298,7 +391,7 @@ func printJSON(value any) error {
 }
 
 func usageError() error {
-	return errors.New("expected one of: inspect, dry-run, synthetic-proof, vault-init, oauth-login, help")
+	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, synthetic-proof, vault-init, oauth-login, help")
 }
 
 func usage() string {
@@ -307,11 +400,14 @@ func usage() string {
 Commands:
   inspect          Inventory one exact mailbox in a read-only SQLite snapshot
   dry-run          Produce hashes/counts without any destination writes
+  inspect-vandelay Inventory one closed Stalwart/Vandelay account archive
+  dry-run-vandelay Validate and hash a Vandelay archive without provider writes
+  prove-vandelay   Migrate an archive into memory and rebuild a fresh projection
   synthetic-proof  Migrate synthetic mail and rebuild a fresh SQLite projection
   vault-init       Create an encrypted OAuth session vault and key
   oauth-login      Obtain and encrypt an exact mailbox-space OAuth grant
 
-All source SQLite inputs must be explicit, consistent snapshots. There is no
-production provider migration command until rsky passes certification.
+All source SQLite inputs must be explicit, closed, consistent snapshots. The
+rsky certificate applies only to the isolated pinned build plus lab patch.
 `
 }

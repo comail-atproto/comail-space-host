@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/bluesky-social/indigo v0.0.0-20260518213654-26e3a651d39a
 	golang.org/x/sys v0.44.0
+	lukechampine.com/blake3 v1.2.1
 	modernc.org/sqlite v1.53.0
 )
 
@@ -17,6 +18,7 @@ require (
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/matttproud/golang_protobuf_extensions/v2 v2.0.0 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect

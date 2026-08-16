@@ -11,14 +11,14 @@ import (
 	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
 )
 
-func Verify(ctx context.Context, snapshot *sqliteimport.Snapshot, space sqliteimport.Space, repo repository.Repository, target repository.Target) (Verification, error) {
+func Verify(ctx context.Context, snapshot SourceSnapshot, space sqliteimport.Space, repo repository.Repository, target repository.Target) (Verification, error) {
 	verification := Verification{}
 	type expectedMessage struct {
 		imported mailbox.ImportedMessage
 	}
 	expectedMessages := make(map[string]expectedMessage)
 	if err := snapshot.Stream(ctx, space, func(src sqliteimport.SourceMessage) error {
-		fingerprint := mailbox.DeliveryFingerprint(space.User, src.Imported.Raw)
+		fingerprint := mailbox.ImportedFingerprint(src.Imported)
 		expectedMessages[fingerprint] = expectedMessage{imported: src.Imported}
 		return nil
 	}); err != nil {

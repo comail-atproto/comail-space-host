@@ -1,6 +1,8 @@
 package contracts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -34,7 +36,7 @@ func TestLexiconsAreValidAndIDsMatchPaths(t *testing.T) {
 	}
 }
 
-func TestRskyFailedCertificateMatchesPinnedEpoch(t *testing.T) {
+func TestRskyLabPatchCertificateMatchesPinnedEpoch(t *testing.T) {
 	lock, err := os.ReadFile(filepath.Join("..", "..", "providers", "rsky.lock"))
 	if err != nil {
 		t.Fatal(err)
@@ -50,16 +52,28 @@ func TestRskyFailedCertificateMatchesPinnedEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var certificate struct {
-		Epoch  string `json:"epoch"`
-		Passed bool   `json:"passed"`
-		Checks struct {
+		Epoch       string `json:"epoch"`
+		Passed      bool   `json:"passed"`
+		Patch       string `json:"patch"`
+		PatchSHA256 string `json:"patchSHA256"`
+		Scope       string `json:"scope"`
+		Checks      struct {
 			Atomic string `json:"blobVerifiedBeforeRecordCommit"`
 		} `json:"checks"`
 	}
 	if err := json.Unmarshal(data, &certificate); err != nil {
 		t.Fatal(err)
 	}
-	if commit == "" || certificate.Epoch != commit || certificate.Passed || certificate.Checks.Atomic != "fail" {
-		t.Fatalf("rsky failed certificate does not bind the pinned unsafe epoch: %#v commit=%q", certificate, commit)
+	if commit == "" || certificate.Epoch != commit || !certificate.Passed || certificate.Checks.Atomic != "pass with lab patch" || !strings.Contains(certificate.Scope, "isolated lab") {
+		t.Fatalf("rsky lab certificate does not bind the patched pinned epoch: %#v commit=%q", certificate, commit)
+	}
+	patchPath := filepath.Join("..", "..", certificate.Patch)
+	patchBytes, err := os.ReadFile(patchPath)
+	if err != nil {
+		t.Fatalf("certified patch is missing: %v", err)
+	}
+	hash := sha256.Sum256(patchBytes)
+	if hex.EncodeToString(hash[:]) != certificate.PatchSHA256 {
+		t.Fatal("certified patch hash does not match")
 	}
 }

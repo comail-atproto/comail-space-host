@@ -64,7 +64,13 @@ type Report struct {
 	Verification     Verification            `json:"verification"`
 }
 
-func Run(ctx context.Context, snapshot *sqliteimport.Snapshot, repo repository.Repository, opts Options) (Report, error) {
+type SourceSnapshot interface {
+	Inspect(context.Context, string, string) (sqliteimport.Inventory, error)
+	Folders(context.Context, sqliteimport.Space) ([]sqliteimport.SourceFolder, error)
+	Stream(context.Context, sqliteimport.Space, func(sqliteimport.SourceMessage) error) error
+}
+
+func Run(ctx context.Context, snapshot SourceSnapshot, repo repository.Repository, opts Options) (Report, error) {
 	report := Report{Version: 1, DryRun: !opts.Commit, Fingerprints: []string{}}
 	if snapshot == nil || repo == nil {
 		return report, errors.New("migrate: snapshot and repository are required")
@@ -89,7 +95,7 @@ func Run(ctx context.Context, snapshot *sqliteimport.Snapshot, repo repository.R
 	}
 	if !opts.Commit {
 		err := snapshot.Stream(ctx, inv.Space, func(src sqliteimport.SourceMessage) error {
-			report.Fingerprints = append(report.Fingerprints, mailbox.DeliveryFingerprint(opts.RecipientDID, src.Imported.Raw))
+			report.Fingerprints = append(report.Fingerprints, mailbox.ImportedFingerprint(src.Imported))
 			return nil
 		})
 		sort.Strings(report.Fingerprints)
@@ -143,7 +149,7 @@ func Run(ctx context.Context, snapshot *sqliteimport.Snapshot, repo repository.R
 		}
 	}
 	err = snapshot.Stream(ctx, inv.Space, func(src sqliteimport.SourceMessage) error {
-		fingerprint := mailbox.DeliveryFingerprint(opts.RecipientDID, src.Imported.Raw)
+		fingerprint := mailbox.ImportedFingerprint(src.Imported)
 		report.Fingerprints = append(report.Fingerprints, fingerprint)
 		existing, getErr := repo.GetRecord(ctx, target, mailbox.MessageCollection, fingerprint)
 		if getErr == nil {

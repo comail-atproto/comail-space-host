@@ -36,6 +36,11 @@
             "minLength": 71,
             "maxLength": 71
           },
+		  "sourceKey": {
+			"type": "string",
+			"description": "Stable opaque source identity used to preserve distinct messages with identical RFC 5322 bytes during migration.",
+			"maxLength": 512
+		  },
           "initialMailbox": {
             "type": "string",
             "minLength": 1,

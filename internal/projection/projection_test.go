@@ -55,7 +55,7 @@ func TestRebuildFreshProjectionFromPermissionedSpace(t *testing.T) {
 	}
 	defer db.Close()
 	var uid, uidValidity int
-	if err := db.QueryRow(`SELECT uid, uid_validity FROM messages WHERE mailbox='INBOX' ORDER BY uid LIMIT 1`).Scan(&uid, &uidValidity); err != nil {
+	if err := db.QueryRow(`SELECT uid, uid_validity FROM message_mailboxes WHERE mailbox='INBOX' ORDER BY uid LIMIT 1`).Scan(&uid, &uidValidity); err != nil {
 		t.Fatal(err)
 	}
 	if uid != 1 || uidValidity != 101 {
@@ -89,5 +89,58 @@ func TestRebuildRefusesExistingDestinationAndOrphanState(t *testing.T) {
 	}
 	if _, err := Rebuild(ctx, repo, target, path); err == nil {
 		t.Fatal("existing destination was overwritten")
+	}
+}
+
+func TestRebuildAllocatesPerFolderUIDsForMultiMailboxMessage(t *testing.T) {
+	ctx := context.Background()
+	did := "did:plc:projectionmultimailbox"
+	repo := memory.NewBackend().OwnerSession(did)
+	target, err := repo.EnsureMailbox(ctx, did, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox := mailbox.NewFolder("INBOX", "inbox", mailbox.StableUIDValidity(did, "INBOX"))
+	archive := mailbox.NewFolder("Archive", "archive", mailbox.StableUIDValidity(did, "Archive"))
+	if _, err := repo.ApplyWrites(ctx, target, []repository.Write{
+		{Action: repository.Create, Collection: mailbox.FolderCollection, RKey: inbox.RKey, Value: inbox.Record},
+		{Action: repository.Create, Collection: mailbox.FolderCollection, RKey: archive.RKey, Value: archive.Record},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("Message-ID: <multi@example.test>\r\n\r\nbody\r\n")
+	blob, err := repo.UploadBlob(ctx, target, raw, mailbox.MessageMIMEType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := mailbox.NewMessagePair(mailbox.ImportedMessage{RecipientDID: did, SourceKey: "vandelay:1", Raw: raw, Mailboxes: []string{"INBOX", "Archive"}}, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyWrites(ctx, target, []repository.Write{
+		{Action: repository.Create, Collection: mailbox.MessageCollection, RKey: pair.RKey, Value: pair.Message},
+		{Action: repository.Create, Collection: mailbox.MessageStateCollection, RKey: pair.RKey, Value: pair.State},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "multi.sqlite")
+	report, err := Rebuild(ctx, repo, target, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed() || report.Messages != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var memberships, distinctUIDValidity int
+	if err := db.QueryRow(`SELECT COUNT(*), COUNT(DISTINCT uid_validity) FROM message_mailboxes WHERE rkey=?`, pair.RKey).Scan(&memberships, &distinctUIDValidity); err != nil {
+		t.Fatal(err)
+	}
+	if memberships != 2 || distinctUIDValidity != 2 {
+		t.Fatalf("memberships=%d uidvalidity=%d", memberships, distinctUIDValidity)
 	}
 }

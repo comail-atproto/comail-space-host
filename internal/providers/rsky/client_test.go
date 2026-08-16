@@ -17,7 +17,7 @@ import (
 
 const (
 	rskyDID    = "did:plc:rskytest"
-	rskyOrigin = "https://pds.example.test"
+	rskyOrigin = "http://127.0.0.1:18080"
 	rskyEpoch  = "2918753b1f32ae99022bc2c5cc9a0cc645095337"
 )
 
@@ -68,7 +68,7 @@ func (d *scriptedDoer) Do(_ context.Context, req *http.Request, endpoint string)
 
 func newTestClient(t *testing.T, doer Doer) *Client {
 	t.Helper()
-	client, err := New(Config{Origin: rskyOrigin, DID: rskyDID, Epoch: rskyEpoch, AllowWrites: true, CertificationProbe: true}, doer)
+	client, err := New(Config{Origin: rskyOrigin, DID: rskyDID, Epoch: rskyEpoch, AllowHTTP: true, AllowWrites: true, CertificationProbe: true, CertificationPatch: CertifiedPatchID}, doer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,11 +76,11 @@ func newTestClient(t *testing.T, doer Doer) *Client {
 }
 
 func TestPinnedEpochRefusesMailboxWriteMode(t *testing.T) {
-	_, err := New(Config{Origin: rskyOrigin, DID: rskyDID, Epoch: rskyEpoch, AllowWrites: true}, &scriptedDoer{})
+	_, err := New(Config{Origin: rskyOrigin, DID: rskyDID, Epoch: rskyEpoch, AllowHTTP: true, AllowWrites: true}, &scriptedDoer{})
 	if !errors.Is(err, repository.ErrUnsupported) {
 		t.Fatalf("write-mode error = %v", err)
 	}
-	client, err := New(Config{Origin: rskyOrigin, DID: rskyDID, Epoch: rskyEpoch}, &scriptedDoer{})
+	client, err := New(Config{Origin: rskyOrigin, DID: rskyDID, Epoch: rskyEpoch, AllowHTTP: true}, &scriptedDoer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +90,18 @@ func TestPinnedEpochRefusesMailboxWriteMode(t *testing.T) {
 	}
 	if capabilities.AtomicApplyWrites {
 		t.Fatal("unsafe pinned epoch advertised atomic applyWrites")
+	}
+	patched, err := New(Config{Origin: rskyOrigin, DID: rskyDID, Epoch: rskyEpoch, AllowHTTP: true, AllowWrites: true, CertificationProbe: true, CertificationPatch: CertifiedPatchID}, &scriptedDoer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err = patched.Capabilities(context.Background())
+	if err != nil || !capabilities.AtomicApplyWrites {
+		t.Fatalf("patched capabilities=%#v err=%v", capabilities, err)
+	}
+	_, err = New(Config{Origin: "https://hosted.example.test", DID: rskyDID, Epoch: rskyEpoch, AllowWrites: true, CertificationProbe: true, CertificationPatch: CertifiedPatchID}, &scriptedDoer{})
+	if !errors.Is(err, repository.ErrUnsupported) {
+		t.Fatalf("hosted certification probe error = %v", err)
 	}
 }
 

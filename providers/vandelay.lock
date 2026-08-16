@@ -1,0 +1,6 @@
+repository=https://github.com/stalwartlabs/vandelay.git
+commit=c4e06bd87da0350c6689b3b80a34d69f0e1a0a60
+version=1.0.7
+rust_toolchain=1.97.1
+schema_source=src/db/schema.sql
+verified_at=2026-08-16
