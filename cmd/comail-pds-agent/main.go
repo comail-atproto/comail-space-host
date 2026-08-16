@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,16 +23,17 @@ import (
 )
 
 type options struct {
-	Listen     string
-	Provider   string
-	Origin     string
-	BasePath   string
-	PublicHost string
-	DID        string
-	SpaceKey   string
-	CookieFile string
-	TokenFile  string
-	Commit     bool
+	Listen                     string
+	Provider                   string
+	Origin                     string
+	BasePath                   string
+	PublicHost                 string
+	DID                        string
+	SpaceKey                   string
+	CookieFile                 string
+	TokenFile                  string
+	Commit                     bool
+	AuthorityCertificateSHA256 string
 }
 
 type virtualHostDoer struct {
@@ -69,6 +72,7 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&opts.CookieFile, "cookie-file", "", "absolute owner-only HappyView session file")
 	flags.StringVar(&opts.TokenFile, "token-file", "", "absolute owner-only agent bearer token file")
 	flags.BoolVar(&opts.Commit, "commit", false, "allow writes to the exact private target")
+	flags.StringVar(&opts.AuthorityCertificateSHA256, "authority-certificate-sha256", "", "pinned authority certification evidence digest (enables v2 inventory/CAS)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -99,6 +103,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	handler, err := shadowagent.NewHandler(shadowagent.Config{
 		Token: token, DID: opts.DID, Target: target, Repository: repo,
+		AuthorityCertificateSHA256: opts.AuthorityCertificateSHA256,
 	})
 	if err != nil {
 		return err
@@ -154,6 +159,12 @@ func validateOptions(opts options) error {
 	}
 	if !filepath.IsAbs(opts.CookieFile) || !filepath.IsAbs(opts.TokenFile) {
 		return errors.New("cookie and token files must be absolute")
+	}
+	if opts.AuthorityCertificateSHA256 != "" {
+		decoded, err := hex.DecodeString(opts.AuthorityCertificateSHA256)
+		if err != nil || len(decoded) != sha256.Size || opts.AuthorityCertificateSHA256 != strings.ToLower(opts.AuthorityCertificateSHA256) {
+			return errors.New("authority certificate SHA-256 must be 64 lowercase hexadecimal characters")
+		}
 	}
 	return nil
 }

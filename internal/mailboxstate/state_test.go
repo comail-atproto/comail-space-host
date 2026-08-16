@@ -151,3 +151,28 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestReplaceCommitsExactPortableStateAndReplaysIdempotently(t *testing.T) {
+	did := "did:plc:statereplace"
+	repo := memory.NewBackend().OwnerSession(did)
+	target, rkey := seedMessage(t, repo, did)
+	replacement := Replacement{
+		MessageRKey: rkey, ExpectedRevision: 1, OperationID: "jmap-change-1",
+		Mailbox: "Archive", Keywords: []string{"$seen", "$flagged"}, Now: time.Unix(10, 0),
+	}
+	first, err := Replace(t.Context(), repo, target, replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision != 2 || first.LastOperation != replacement.OperationID || len(first.MailboxIDs) != 1 || first.MailboxIDs[0] != mailbox.FolderRKey("Archive") || len(first.Keywords) != 2 {
+		t.Fatalf("first=%#v", first)
+	}
+	replayed, err := Replace(t.Context(), repo, target, replacement)
+	if err != nil || replayed.Revision != first.Revision {
+		t.Fatalf("replayed=%#v err=%v", replayed, err)
+	}
+	replacement.OperationID = "stale-other"
+	if _, err := Replace(t.Context(), repo, target, replacement); !errors.Is(err, ErrStaleRevision) {
+		t.Fatalf("stale error=%v", err)
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ func TestValidateOptionsRequiresExactLoopbackAndPinnedTarget(t *testing.T) {
 		BasePath: "/comail-pds-lab", PublicHost: "little-mac.lobster-hake.ts.net",
 		DID: "did:plc:comailpdsshadowsynthetic", SpaceKey: "default",
 		CookieFile: "/private/cookie", TokenFile: "/private/token", Commit: true,
+		AuthorityCertificateSHA256: strings.Repeat("a", 64),
 	}
 	if err := validateOptions(valid); err != nil {
 		t.Fatalf("valid options: %v", err)
@@ -24,6 +26,7 @@ func TestValidateOptionsRequiresExactLoopbackAndPinnedTarget(t *testing.T) {
 		func(value *options) { value.PublicHost = "bad.example/path" },
 		func(value *options) { value.CookieFile = "relative" },
 		func(value *options) { value.Commit = false },
+		func(value *options) { value.AuthorityCertificateSHA256 = "not-a-digest" },
 	} {
 		invalid := valid
 		mutate(&invalid)

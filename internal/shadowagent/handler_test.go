@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
 	"github.com/comail-atproto/comail-pds-lab/internal/memory"
 )
 
@@ -54,6 +56,77 @@ func TestHandlerMirrorsAndVerifiesExactPrivateTarget(t *testing.T) {
 		if !body.Receipt.Verified || body.Receipt.Size != int64(len(raw)) || body.Receipt.Target != wireTarget {
 			t.Fatalf("receipt = %#v", body.Receipt)
 		}
+	}
+}
+
+func TestHandlerAuthorityInventoryAndCASState(t *testing.T) {
+	backend := memory.NewBackend()
+	repo := backend.OwnerSession(agentTestDID)
+	target, err := repo.EnsureMailbox(t.Context(), agentTestDID, "authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := strings.Repeat("a", 64)
+	handler, err := NewHandler(Config{
+		Token: "test-token", DID: agentTestDID, Target: target, Repository: repo,
+		AuthorityCertificateSHA256: certificate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireTarget := targetView(repo.ProviderID(), target, certificate)
+	raw := []byte("Message-ID: <authority-agent@test>\r\nSubject: authority\r\n\r\nbody")
+	mirrored := performAgentRequest(t, handler, "/v1/mirror", mirrorRequest{
+		Version: ProtocolVersion, Target: wireTarget, RecipientDID: agentTestDID,
+		Mailbox: "INBOX", Message: protocolMessage{Raw: raw},
+	})
+	if mirrored.Code != http.StatusOK {
+		t.Fatalf("mirror status=%d body=%s", mirrored.Code, mirrored.Body.String())
+	}
+	fingerprint := mailbox.DeliveryFingerprint(agentTestDID, raw)
+	inventory := performAgentRequest(t, handler, "/v2/inventory", inventoryRequest{
+		Version: AuthorityProtocolVersion, Target: wireTarget, Limit: 100,
+	})
+	var listed inventoryResponse
+	if err := json.Unmarshal(inventory.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Code != http.StatusOK || listed.ProviderID != repo.ProviderID() || len(listed.Messages) != 1 || string(listed.Messages[0].Raw) != string(raw) || listed.Messages[0].Revision != 1 {
+		t.Fatalf("inventory status=%d body=%s", inventory.Code, inventory.Body.String())
+	}
+	mutated := performAgentRequest(t, handler, "/v2/state", stateMutationRequest{
+		Version: AuthorityProtocolVersion, Target: wireTarget,
+		Mutation: stateMutation{
+			Fingerprint: fingerprint, ExpectedRevision: 1, OperationID: "jmap-change-1",
+			Mailbox: "Archive", Keywords: []string{"$flagged", "$seen"},
+		},
+	})
+	var changed stateMutationResponse
+	if err := json.Unmarshal(mutated.Body.Bytes(), &changed); err != nil {
+		t.Fatal(err)
+	}
+	if mutated.Code != http.StatusOK || changed.State.Revision != 2 || changed.State.Mailbox != "Archive" || changed.State.LastOperationID != "jmap-change-1" {
+		t.Fatalf("state status=%d body=%s", mutated.Code, mutated.Body.String())
+	}
+	replayed := performAgentRequest(t, handler, "/v2/state", stateMutationRequest{
+		Version: AuthorityProtocolVersion, Target: wireTarget,
+		Mutation: stateMutation{
+			Fingerprint: fingerprint, ExpectedRevision: 1, OperationID: "jmap-change-1",
+			Mailbox: "Archive", Keywords: []string{"$flagged", "$seen"},
+		},
+	})
+	if replayed.Code != http.StatusOK {
+		t.Fatalf("idempotent replay status=%d body=%s", replayed.Code, replayed.Body.String())
+	}
+	conflict := performAgentRequest(t, handler, "/v2/state", stateMutationRequest{
+		Version: AuthorityProtocolVersion, Target: wireTarget,
+		Mutation: stateMutation{
+			Fingerprint: fingerprint, ExpectedRevision: 1, OperationID: "different-stale",
+			Mailbox: "INBOX",
+		},
+	})
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("stale conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
 }
 
