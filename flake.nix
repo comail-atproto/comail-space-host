@@ -19,6 +19,7 @@
             pname = "happyview-web";
             version = "2.13.0";
             src = "${happyview-src}/web";
+            patches = [ ./patches/happyview-hermetic-system-fonts.patch ];
             npmDepsHash = "sha256-4sjYgU/tVGSy+pOl4hMCNMbYCYXYm3uoq9D4bxR0qv0=";
             env = {
               NEXT_PUBLIC_BASE_PATH = "/spaces";
@@ -36,6 +37,8 @@
             version = "2.13.0";
             src = happyview-src;
             cargoHash = "sha256-AzabZcY7zu3qXI5RLJvE20d3ZVPqgD9cwwq0W6WFil8=";
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.openssl ];
             SQLX_OFFLINE = "true";
             HAPPYVIEW_VERSION = "2.13.0";
             doCheck = false;

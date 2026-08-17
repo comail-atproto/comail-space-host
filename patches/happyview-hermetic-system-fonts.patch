@@ -1,0 +1,48 @@
+diff --git a/src/app/globals.css b/src/app/globals.css
+index 37d63a3..ce1cff5 100644
+--- a/src/app/globals.css
++++ b/src/app/globals.css
+@@ -51,3 +51,6 @@
+ :root {
++  --font-geist-sans: ui-sans-serif, system-ui, sans-serif;
++  --font-geist-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
++  --font-zen-tokyo-zoo: ui-rounded, system-ui, sans-serif;
+   --radius: 0.625rem;
+   --background: oklch(1 0 0);
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index e0338d3..09c2d29 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -1,5 +1,4 @@
+ import type { Metadata } from "next";
+-import { Geist, Geist_Mono, Zen_Tokyo_Zoo } from "next/font/google";
+ import { ThemeProvider } from "next-themes";
+ import "./globals.css";
+ import { ConfigProvider } from "@/lib/config-context";
+@@ -9,15 +8,0 @@
+-const zenTokyoZoo = Zen_Tokyo_Zoo({
+-  subsets: ["latin"],
+-  weight: "400",
+-});
+-
+-const geistSans = Geist({
+-  variable: "--font-geist-sans",
+-  subsets: ["latin"],
+-});
+-
+-const geistMono = Geist_Mono({
+-  variable: "--font-geist-mono",
+-  subsets: ["latin"],
+-});
+-
+@@ -33,9 +17,7 @@ export default function RootLayout({
+ }) {
+   return (
+     <html lang="en" suppressHydrationWarning>
+-      <body
+-        className={`${geistSans.variable} ${geistMono.variable} ${zenTokyoZoo} antialiased`}
+-      >
++      <body className="antialiased">
+         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+           <ConfigProvider>
+             <AuthProvider>
