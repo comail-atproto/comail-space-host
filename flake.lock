@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "happyview-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786766179,
+        "narHash": "sha256-B9JD4xqUc3HF19Plj2fiWxUqa7HI5ZFgEKSuXsW+lqQ=",
+        "owner": "gamesgamesgamesgamesgames",
+        "repo": "happyview",
+        "rev": "f50b2afdaf207a2ba91d76cdad7a981a87785294",
+        "type": "github"
+      },
+      "original": {
+        "owner": "gamesgamesgamesgamesgames",
+        "repo": "happyview",
+        "rev": "f50b2afdaf207a2ba91d76cdad7a981a87785294",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1786862985,
@@ -18,6 +35,7 @@
     },
     "root": {
       "inputs": {
+        "happyview-src": "happyview-src",
         "nixpkgs": "nixpkgs"
       }
     }
