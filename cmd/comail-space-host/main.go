@@ -48,7 +48,17 @@ type config struct {
 
 func main() {
 	configPath := flag.String("config", "", "absolute path to the production space-host config")
+	identityOnly := flag.Bool("identity-only", false, "write only the public did:web document to stdout")
+	identityIssuer := flag.String("identity-issuer", "", "exact did:web issuer for identity-only mode")
+	identityKey := flag.String("identity-key", "", "absolute P-256 PKCS#8 key path for identity-only mode")
 	flag.Parse()
+	if *identityOnly {
+		if err := writeIdentityDocument(os.Stdout, *identityIssuer, *identityKey); err != nil {
+			fmt.Fprintln(os.Stderr, "comail-space-host:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if !filepath.IsAbs(*configPath) {
 		fmt.Fprintln(os.Stderr, "comail-space-host: --config must be absolute")
 		os.Exit(2)
@@ -59,6 +69,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, "comail-space-host:", err)
 		os.Exit(1)
 	}
+}
+
+func writeIdentityDocument(output io.Writer, issuerDID, keyPath string) error {
+	if output == nil || !strings.HasPrefix(issuerDID, "did:web:") || !safeAbsoluteFile(keyPath) {
+		return errors.New("identity-only mode requires an exact did:web issuer and absolute key path")
+	}
+	key, err := serviceauth.LoadPrivateKey(keyPath)
+	if err != nil {
+		return fmt.Errorf("load identity signing key: %w", err)
+	}
+	signer, err := serviceauth.New(serviceauth.Config{IssuerDID: issuerDID, Audience: issuerDID + "#self", Key: key})
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(output).Encode(signer.DIDDocument())
 }
 
 func run(ctx context.Context, path string) error {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,6 +12,24 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestWriteIdentityDocumentContainsOnlyMatchingPublicIdentity(t *testing.T) {
+	dir := t.TempDir()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalPKCS8PrivateKey(key)
+	keyPath := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := writeIdentityDocument(&output, "did:web:inbox.comail.at:mailbox-adapter", keyPath); err != nil {
+		t.Fatal(err)
+	}
+	value := output.String()
+	if !strings.Contains(value, `"id":"did:web:inbox.comail.at:mailbox-adapter"`) || strings.Contains(value, "PRIVATE KEY") {
+		t.Fatalf("unexpected identity document: %s", value)
+	}
+}
 
 func TestLoadConfigRequiresExactUniqueMailboxesAndSeparateSecrets(t *testing.T) {
 	dir := t.TempDir()
