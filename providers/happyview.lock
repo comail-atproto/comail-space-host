@@ -1,0 +1,5 @@
+repository=https://github.com/gamesgamesgamesgamesgames/happyview.git
+commit=f50b2afdaf207a2ba91d76cdad7a981a87785294
+version=v2.13.0
+rust_toolchain=1.96.1
+public_origin=http://127.0.0.1:39090

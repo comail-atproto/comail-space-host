@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "provider": "happyview",
+  "release": "v2.13.0",
+  "epoch": "f50b2afdaf207a2ba91d76cdad7a981a87785294",
+  "testedAt": "2026-08-16",
+  "passed": true,
+  "scope": "isolated loopback-only Comail PDS lab; not production approval",
+  "storageMode": "private permissioned-space chunk records",
+  "checks": {
+    "upstreamSpaceAuthAndRecordTests": "31/31 pass",
+    "atomicApplyWrites": "pass",
+    "compareAndSwap": "pass",
+    "privateNonMemberRead": "pass",
+    "credentialRevocation": "pass",
+    "repoCommitAndCAR": "pass",
+    "comailPrivateChunkRoundTrip": "pass",
+    "liveSyntheticMigrationAndRebuild": "pass",
+    "liveSyntheticNonMemberRead": "pass",
+    "liveSourceVersionReplacement": "pass",
+    "exactTargetAndRedirectRefusal": "pass",
+    "loopbackSQLiteStartup": "pass",
+    "anonymousPrivateRouteDenial": "pass"
+  },
+  "limitations": {
+    "nativeBlobAuthority": "not certified; HappyView uploadBlob proxies to the ordinary PDS and is not used for canonical email bytes",
+    "compatibilityLayer": "BlobRef resolves to a manifest CID backed by private bounded chunk records in the same space",
+    "operatorPDSOAuth": "requires one interactive browser login by the operator",
+    "operatorMailboxImport": "requires a dedicated Stalwart app-password and closed Vandelay archive",
+    "frontendAudit": "the pinned upstream npm install reported 21 audit findings; instance remains loopback-only"
+  }
+}

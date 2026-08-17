@@ -1,0 +1,27 @@
+{
+  "lexicon": 1,
+  "id": "email.atmos.blobIndex",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "Experimental HappyView compatibility lookup from a manifest CID to its deterministic record key.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["manifestRKey", "manifestCid"],
+        "properties": {
+          "manifestRKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "manifestCid": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      }
+    }
+  }
+}

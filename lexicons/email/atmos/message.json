@@ -1,0 +1,77 @@
+{
+  "lexicon": 1,
+  "id": "email.atmos.message",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "An immutable private Comail message. Canonical RFC 5322 bytes are stored in the referenced permissioned blob; integrity and delivery metadata allow a standards-facing mailbox to be rebuilt.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "raw",
+          "sha256",
+          "size",
+          "deliveryFingerprint",
+          "initialMailbox"
+        ],
+        "properties": {
+          "raw": {
+            "type": "blob",
+            "accept": ["message/rfc822"],
+            "maxSize": 10485760
+          },
+          "sha256": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10485760
+          },
+          "deliveryFingerprint": {
+            "type": "string",
+            "minLength": 71,
+            "maxLength": 71
+          },
+		  "sourceKey": {
+			"type": "string",
+			"description": "Stable opaque source identity used to preserve distinct messages with identical RFC 5322 bytes during migration.",
+			"maxLength": 512
+		  },
+          "initialMailbox": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "deliveredAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "sourceMessageId": {
+            "type": "string",
+            "maxLength": 998
+          },
+          "messageDate": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "inReplyTo": {
+            "type": "string",
+            "maxLength": 998
+          },
+          "references": {
+            "type": "array",
+            "maxLength": 100,
+            "items": {
+              "type": "string",
+              "maxLength": 998
+            }
+          }
+        }
+      }
+    }
+  }
+}

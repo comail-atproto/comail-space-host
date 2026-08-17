@@ -1,0 +1,45 @@
+{
+  "nodes": {
+    "happyview-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786766179,
+        "narHash": "sha256-B9JD4xqUc3HF19Plj2fiWxUqa7HI5ZFgEKSuXsW+lqQ=",
+        "owner": "gamesgamesgamesgamesgames",
+        "repo": "happyview",
+        "rev": "f50b2afdaf207a2ba91d76cdad7a981a87785294",
+        "type": "github"
+      },
+      "original": {
+        "owner": "gamesgamesgamesgamesgames",
+        "repo": "happyview",
+        "rev": "f50b2afdaf207a2ba91d76cdad7a981a87785294",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1786862985,
+        "narHash": "sha256-FBJRXmbGXiSUDvYEbfLYRkckayyZ6SK1UEqhCrIZ2Cs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e5bdc4a41d4c072fe1e3787eaa0320a384741d44",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "happyview-src": "happyview-src",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

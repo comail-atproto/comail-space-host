@@ -1,0 +1,14 @@
+.DS_Store
+/bin/
+/state/
+/evidence/
+/tmp/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.pem
+*.key
+*.token
+*.session
+.env

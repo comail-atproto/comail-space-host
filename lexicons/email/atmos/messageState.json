@@ -1,0 +1,91 @@
+{
+  "lexicon": 1,
+  "id": "email.atmos.messageState",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "Experimental mutable mailbox state for an email.atmos.message. Updates require provider compare-and-swap and per-field merge rules.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "message",
+          "mailboxIds",
+          "keywords",
+          "revision",
+          "updatedAt"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "mailboxIds": {
+            "type": "array",
+            "minLength": 1,
+            "maxLength": 32,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "keywords": {
+            "type": "array",
+            "maxLength": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          },
+          "deletePending": {
+            "type": "boolean"
+          },
+          "tombstone": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "lastOperation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Opaque idempotency key for the most recently committed mailbox-state mutation."
+          },
+          "projection": {
+            "type": "ref",
+            "ref": "#projectionIdentity"
+          }
+        }
+      }
+    },
+    "projectionIdentity": {
+      "type": "object",
+      "description": "Optional stable IMAP identity carried during SQLite migration and projection recovery.",
+      "properties": {
+        "uid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "uidValidity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "modSeq": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,170 @@
+diff --git a/rsky-pds/src/apis/com/atproto/space/mod.rs b/rsky-pds/src/apis/com/atproto/space/mod.rs
+index 8448a24..465784b 100644
+--- a/rsky-pds/src/apis/com/atproto/space/mod.rs
++++ b/rsky-pds/src/apis/com/atproto/space/mod.rs
+@@ -176,13 +176,11 @@ pub async fn apply_space_writes(
+             SpaceWrite::Delete { .. } => Vec::new(),
+         })
+         .collect();
+-    let commit = transactor
+-        .space
+-        .apply_writes(space, writes, oplog_window())
+-        .await
+-        .map_err(space_error)?;
+-    // Promote referenced blobs out of temp storage, like the public write
+-    // path. Unparseable refs are skipped: they can never be fetched.
++    // Verify and promote referenced blobs before the space transaction. An
++    // errored write must not leave durable records behind: callers rely on an
++    // error meaning the batch did not commit. If the later record transaction
++    // fails, an unreferenced promoted blob is safe and remains eligible for
++    // normal orphan cleanup.
+     for (blob_cid, mime_type) in blob_refs {
+         let Ok(cid) = <lexicon_cid::Cid as std::str::FromStr>::from_str(&blob_cid) else {
+             continue;
+@@ -200,6 +198,11 @@ pub async fn apply_space_writes(
+             .await
+             .map_err(|error| ApiError::BadRequest("BlobNotFound".to_string(), error.to_string()))?;
+     }
++    let commit = transactor
++        .space
++        .apply_writes(space, writes, oplog_window())
++        .await
++        .map_err(space_error)?;
+     notify_after_write(
+         actor_store,
+         blobstore_factory,
+diff --git a/rsky-pds/tests/space_integration_tests.rs b/rsky-pds/tests/space_integration_tests.rs
+index bba1d8c..c1c44f8 100644
+--- a/rsky-pds/tests/space_integration_tests.rs
++++ b/rsky-pds/tests/space_integration_tests.rs
+@@ -1454,6 +1454,20 @@ async fn blob_upload_and_space_get_blob() {
+     .await;
+     assert_eq!(status, Status::BadRequest, "{body}");
+
++    // A rejected blob reference must not leave the record committed. Mailbox
++    // delivery relies on an error meaning that no durable message record is
++    // visible; otherwise an SMTP retry can produce ambiguous partial state.
++    let (status, body) = get_json(
++        &s.client,
++        &format!(
++            "/xrpc/com.atproto.space.getRecord?space={}&repo={AUTHOR_DID}&collection={COLLECTION}&rkey=3kmissingblob",
++            s.space
++        ),
++        &s.author_token,
++    )
++    .await;
++    assert_ne!(status, Status::Ok, "rejected missing-blob record remained durable: {body}");
++
+     let (status, body) = post_json(
+         &s.client,
+         "/xrpc/com.atproto.space.createRecord",
+@@ -1561,6 +1575,109 @@ async fn blob_upload_and_space_get_blob() {
+     assert_eq!(status, Status::BadRequest);
+ }
+
++#[tokio::test]
++async fn comail_mailbox_space_round_trips_authority_records() {
++    use sha2::Digest as _;
++
++    let s = setup().await;
++    let (status, body) = post_json(
++        &s.client,
++        "/xrpc/com.atproto.simplespace.createSpace",
++        &s.author_token,
++        json!({"type": "email.atmos.mailbox", "skey": "primary"}),
++    )
++    .await;
++    assert_eq!(status, Status::Ok, "{body}");
++    let mailbox_space = body["uri"].as_str().unwrap().to_string();
++    assert_eq!(
++        mailbox_space,
++        format!("at://{AUTHOR_DID}/space/email.atmos.mailbox/primary")
++    );
++
++    let raw = b"Message-ID: <rsky-mailbox@example.test>\r\nSubject: isolated proof\r\n\r\nprivate body\r\n";
++    let response = s
++        .client
++        .post("/xrpc/com.atproto.repo.uploadBlob")
++        .header(ContentType::new("message", "rfc822"))
++        .header(bearer(&s.author_token))
++        .body(raw.as_slice())
++        .dispatch()
++        .await;
++    assert_eq!(response.status(), Status::Ok);
++    let upload: Value = response.into_json().await.unwrap();
++    let blob = upload["blob"].clone();
++    let blob_cid = blob["ref"]["$link"].as_str().unwrap().to_string();
++    let sha256 = hex::encode(sha2::Sha256::digest(raw));
++    let rkey = format!("sha256-{sha256}");
++    let folder_rkey = "folder-inbox";
++
++    let (status, body) = post_json(
++        &s.client,
++        "/xrpc/com.atproto.space.applyWrites",
++        &s.author_token,
++        json!({
++            "space": mailbox_space,
++            "repo": AUTHOR_DID,
++            "validate": false,
++            "writes": [
++                {"action": "create", "collection": "email.atmos.folder", "rkey": folder_rkey,
++                 "value": {"$type": "email.atmos.folder", "name": "INBOX", "role": "inbox",
++                           "uidValidity": 1, "revision": 1, "updatedAt": "1970-01-01T00:00:00Z"}},
++                {"action": "create", "collection": "email.atmos.message", "rkey": rkey,
++                 "value": {"$type": "email.atmos.message", "raw": blob, "sha256": sha256,
++                           "size": raw.len(), "deliveryFingerprint": rkey, "initialMailbox": "INBOX"}},
++                {"action": "create", "collection": "email.atmos.messageState", "rkey": rkey,
++                 "value": {"$type": "email.atmos.messageState", "message": rkey,
++                           "mailboxIds": [folder_rkey], "keywords": ["$seen"],
++                           "revision": 1, "updatedAt": "1970-01-01T00:00:00Z"}}
++            ]
++        }),
++    )
++    .await;
++    assert_eq!(status, Status::Ok, "{body}");
++    assert_eq!(body["results"].as_array().unwrap().len(), 3);
++
++    for collection in [
++        "email.atmos.folder",
++        "email.atmos.message",
++        "email.atmos.messageState",
++    ] {
++        let (status, body) = get_json(
++            &s.client,
++            &format!(
++                "/xrpc/com.atproto.space.listRecords?space={mailbox_space}&repo={AUTHOR_DID}&collection={collection}"
++            ),
++            &s.author_token,
++        )
++        .await;
++        assert_eq!(status, Status::Ok, "{body}");
++        assert_eq!(body["records"].as_array().unwrap().len(), 1, "{body}");
++    }
++
++    let response = s
++        .client
++        .get(format!(
++            "/xrpc/com.atproto.space.getBlob?space={mailbox_space}&repo={AUTHOR_DID}&cid={blob_cid}"
++        ))
++        .header(bearer(&s.author_token))
++        .dispatch()
++        .await;
++    assert_eq!(response.status(), Status::Ok);
++    assert_eq!(response.into_bytes().await.unwrap(), raw);
++
++    // A different authenticated account cannot use its session token to read
++    // the private mailbox space, even when it knows the exact CID.
++    let response = s
++        .client
++        .get(format!(
++            "/xrpc/com.atproto.space.getBlob?space={mailbox_space}&repo={AUTHOR_DID}&cid={blob_cid}"
++        ))
++        .header(bearer(&s.member_token))
++        .dispatch()
++        .await;
++    assert_ne!(response.status(), Status::Ok);
++}
++
+ fn craft_credential_jwt(iss: &str, sub: &str, keypair: Option<&secp256k1::Keypair>) -> String {
+     use rsky_space::credential::{encode, JwtHeader, SpaceClaims, CREDENTIAL_TYP};
+     let header = JwtHeader {

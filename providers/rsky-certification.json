@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "provider": "rsky",
+  "repository": "https://github.com/blacksky-algorithms/rsky.git",
+  "epoch": "2918753b1f32ae99022bc2c5cc9a0cc645095337",
+  "patch": "patches/rsky-atomic-referenced-blobs.patch",
+  "patchSHA256": "456328d3ad74f54d6b2a450a44732ed95f093f541241fe97235d2f13adc6ade8",
+  "evaluatedAt": "2026-08-16",
+  "passed": true,
+  "checks": {
+    "sourceCommitPinned": "pass",
+    "spaceApiPresent": "pass",
+    "compareAndSwapPathPresent": "pass",
+    "referencedBlobReadAuthorizationPresent": "pass",
+    "upstreamEpochWithoutPatch": "fail: rejected missing-blob write left a durable record",
+    "blobVerifiedBeforeRecordCommit": "pass with lab patch",
+    "residualRecordRegressionTestPresent": "pass with lab patch",
+    "upstreamIntegrationSuiteAfterSourceGate": "pass: 16/16 including exact Comail mailbox authority round-trip and cross-account blob denial"
+  },
+  "scope": "Disposable isolated lab only. This certificate does not approve an upstream or hosted rsky release for Comail production."
+}
