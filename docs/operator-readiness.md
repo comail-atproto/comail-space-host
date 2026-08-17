@@ -47,12 +47,19 @@ Observed 2026-08-16; no production state was changed.
   space, wrote one synthetic message twice, and verified identical byte-exact
   receipts. It was then stopped. The test did not add synthetic mail to the
   operator's normal `default` mailbox.
-- A fresh `comail-cert-20260816-a` space passed the mutable-authority
+- A fresh `comail-cert-20260816-source-v1` space passed the expanded
+  mutable-authority
   certification: byte-exact readback, atomic message/state creation, stale-CID
-  rejection, idempotent mutation retry, flagging, folder movement, clean
-  rebuild, tombstoning, and a second rebuild with no resurrection. Evidence is
-  redacted under ignored owner-only state; the real `default` mailbox was not
-  mutated by this test.
+  rejection, idempotent mutation retry, flagging, folder movement, atomic
+  source-version replacement for edited draft/sent bytes, clean rebuild,
+  tombstoning, and a second rebuild with no resurrection. Evidence is redacted
+  under ignored owner-only state; the real `default` mailbox was not mutated by
+  this test.
+- A separate `comail-capture-validation-20260816-a` space then exercised the
+  running certificate-gated `/v2/capture` adapter with two synthetic versions
+  of one stable JMAP draft source. Authenticated inventory returned exactly one
+  live edited version and one byte-free tombstone. The agent was stopped after
+  the proof; the real `default` mailbox was not mutated.
 
 ## Remaining optional comparison artifact
 

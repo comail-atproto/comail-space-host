@@ -171,7 +171,7 @@ func (s *Session) PutRecordCAS(_ context.Context, target repository.Target, coll
 	}
 	next := cloneSpace(space)
 	result, err := s.applyOneLocked(next, target, repository.Write{
-		Action: repository.Update, Collection: collection, RKey: rkey, Value: value,
+		Action: repository.Update, Collection: collection, RKey: rkey, Value: value, SwapCID: expectedCID,
 	})
 	if err != nil {
 		return repository.Record{}, err
@@ -290,6 +290,9 @@ func (s *Session) applyOneLocked(space *spaceState, target repository.Target, wr
 	existing, exists := lookupRecord(space, target.RepoDID, write.Collection, write.RKey)
 	switch write.Action {
 	case repository.Create:
+		if write.SwapCID != "" {
+			return repository.WriteResult{}, mailbox.ErrInvalidRecord
+		}
 		if exists {
 			return repository.WriteResult{}, repository.ErrExists
 		}
@@ -297,9 +300,15 @@ func (s *Session) applyOneLocked(space *spaceState, target repository.Target, wr
 		if !exists {
 			return repository.WriteResult{}, repository.ErrNotFound
 		}
+		if write.SwapCID != "" && existing.cid != write.SwapCID {
+			return repository.WriteResult{}, repository.ErrConflict
+		}
 	case repository.Delete:
 		if !exists {
 			return repository.WriteResult{}, repository.ErrNotFound
+		}
+		if write.SwapCID != "" && existing.cid != write.SwapCID {
+			return repository.WriteResult{}, repository.ErrConflict
 		}
 		removeBlobRefs(space, target.RepoDID, existing.value)
 		delete(space.records[target.RepoDID][write.Collection], write.RKey)

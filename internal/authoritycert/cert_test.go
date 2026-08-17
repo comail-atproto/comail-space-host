@@ -2,7 +2,10 @@ package authoritycert
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,10 +29,11 @@ func TestRunProvesImmutableStateCASRecoveryAndTombstone(t *testing.T) {
 		t.Fatalf("report = %#v", report)
 	}
 	if !report.Checks.ByteExactReadback || !report.Checks.AtomicMessageState || !report.Checks.ProviderCASConflict ||
-		!report.Checks.IdempotentStateRetry || !report.Checks.MailboxMove || !report.Checks.RebuildBeforeDelete || !report.Checks.TombstoneRecovery {
+		!report.Checks.IdempotentStateRetry || !report.Checks.MailboxMove || !report.Checks.SourceVersionReplacement ||
+		!report.Checks.RebuildBeforeDelete || !report.Checks.TombstoneRecovery {
 		t.Fatalf("checks = %#v", report.Checks)
 	}
-	if report.BeforeDelete.Messages != 1 || report.BeforeDelete.Tombstones != 0 || report.AfterDelete.Tombstones != 1 {
+	if report.BeforeDelete.Messages != 2 || report.BeforeDelete.Tombstones != 1 || report.AfterDelete.Tombstones != 2 {
 		t.Fatalf("projection reports = %#v / %#v", report.BeforeDelete, report.AfterDelete)
 	}
 }
@@ -48,5 +52,50 @@ func TestRunRefusesNonEmptyCertificationSpace(t *testing.T) {
 	options.WorkDir = filepath.Join(t.TempDir(), "second")
 	if _, err := Run(context.Background(), repo, options); err == nil {
 		t.Fatal("accepted a non-empty certification space")
+	}
+}
+
+func TestLoadEvidenceBindsOwnerOnlyReportToExactProviderEpoch(t *testing.T) {
+	did := "did:plc:authoritycertevidence"
+	repo := memory.NewBackend().OwnerSession(did)
+	options := Options{
+		RecipientDID: did, SpaceKey: "cert-run-evidence", RunID: "evidence-run",
+		WorkDir: filepath.Join(t.TempDir(), "artifacts"), Now: time.Now(),
+	}
+	report, err := Run(context.Background(), repo, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := repo.EnsureMailbox(context.Background(), did, options.SpaceKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := filepath.Join(t.TempDir(), "evidence.json")
+	if err := os.WriteFile(evidence, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := LoadEvidence(evidence, repo.ProviderID(), target)
+	if err != nil || len(digest) != 64 {
+		t.Fatalf("digest=%q err=%v", digest, err)
+	}
+	operationalTarget, err := repo.EnsureMailbox(context.Background(), did, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEvidence(evidence, repo.ProviderID(), operationalTarget); err != nil {
+		t.Fatalf("disposable-space evidence did not certify the same provider epoch: %v", err)
+	}
+	if _, err := LoadEvidence(evidence, repo.ProviderID()+"-other", target); err == nil {
+		t.Fatal("evidence was accepted for a different provider")
+	}
+	if err := os.Chmod(evidence, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEvidence(evidence, repo.ProviderID(), target); err == nil || !strings.Contains(err.Error(), "owner-only") {
+		t.Fatalf("broad evidence err=%v", err)
 	}
 }

@@ -501,6 +501,9 @@ func (c *Client) applyRaw(ctx context.Context, target repository.Target, writes 
 			return nil, mailbox.ErrInvalidRecord
 		}
 		item := map[string]any{"action": string(write.Action), "collection": write.Collection, "rkey": write.RKey}
+		if write.SwapCID != "" {
+			item["swapRecord"] = write.SwapCID
+		}
 		switch write.Action {
 		case repository.Create, repository.Update:
 			if write.Value == nil {

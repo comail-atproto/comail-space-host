@@ -17,6 +17,7 @@
     "comailPrivateChunkRoundTrip": "pass",
     "liveSyntheticMigrationAndRebuild": "pass",
     "liveSyntheticNonMemberRead": "pass",
+    "liveSourceVersionReplacement": "pass",
     "exactTargetAndRedirectRefusal": "pass",
     "loopbackSQLiteStartup": "pass",
     "anonymousPrivateRouteDenial": "pass"

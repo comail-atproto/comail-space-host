@@ -196,6 +196,9 @@ func (c *Client) ApplyWrites(ctx context.Context, target repository.Target, writ
 			return repository.Commit{}, mailbox.ErrInvalidRecord
 		}
 		wire := map[string]any{"action": string(write.Action), "collection": write.Collection, "rkey": write.RKey}
+		if write.SwapCID != "" {
+			wire["swapRecord"] = write.SwapCID
+		}
 		switch write.Action {
 		case repository.Create, repository.Update:
 			if write.Value == nil {

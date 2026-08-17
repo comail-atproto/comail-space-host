@@ -230,8 +230,9 @@ tailnet-only; never enable Funnel.
 The lab also exposes a narrow provider-adapter protocol for a future Comail
 relay shadow. The agent holds the provider session locally; the relay receives
 only a separate bearer token and an exact provider/repository/space binding.
-It supports two authenticated POSTs: a capability probe and an idempotent
-store-plus-readback operation. It never accepts a target from SMTP input.
+It supports authenticated capability, delivery, inventory, state, and
+draft/sent source-version capture operations. It never accepts a target from
+SMTP input.
 
 Live writes require both an explicit provider and `--commit`, and the listener
 is restricted to exact IPv4 loopback:
@@ -241,8 +242,15 @@ go run ./cmd/comail-pds-agent \
   --provider happyview --commit \
   --did did:plc:example \
   --cookie-file "$PWD/state/operator/happyview-cookie" \
-  --token-file "$PWD/state/operator/shadow-agent-token"
+  --token-file "$PWD/state/operator/shadow-agent-token" \
+  --source-versioning-certificate-file \
+    "$PWD/state/authority-cert-source-versioning/evidence.json"
 ```
+
+The source-versioning endpoint stays disabled unless that owner-only evidence
+is a fully passing v2 certification for the exact provider epoch. Certification
+runs against a disposable `comail-cert-*` space; the operational space remains
+separately pinned by the agent and Comail target binding.
 
 The current operator proof used a separate private validation space, wrote one
 synthetic RFC 5322 message twice, and received byte-exact authenticated
@@ -287,11 +295,12 @@ go run ./cmd/comail-pds-lab certify-happyview-authority \
 
 It proves byte-exact readback, atomic message-plus-state creation, rejection of
 a stale provider CAS, idempotent retry of the winning state mutation, folder
-movement, a clean projection rebuild, tombstoning, and a second rebuild that
-does not resurrect the deleted message. The live pinned HappyView run on
-2026-08-16 passed every check. This certifies the storage/state primitive; it
-does not by itself authorize production routing or prove that Bulwark/Stalwart
-state synchronization is complete.
+movement, atomic replacement of edited bytes under one stable source identity,
+a clean projection rebuild, tombstoning, and a second rebuild that does not
+resurrect the deleted message. The live pinned HappyView run on 2026-08-16
+passed every check in a disposable space. This certifies the storage/state
+primitive; it does not by itself authorize production routing or prove that
+Bulwark/Stalwart state synchronization is complete.
 
 ## Current rsky result
 

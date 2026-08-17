@@ -18,22 +18,24 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/comail-atproto/comail-pds-lab/internal/authoritycert"
 	"github.com/comail-atproto/comail-pds-lab/internal/providers/happyview"
 	"github.com/comail-atproto/comail-pds-lab/internal/shadowagent"
 )
 
 type options struct {
-	Listen                     string
-	Provider                   string
-	Origin                     string
-	BasePath                   string
-	PublicHost                 string
-	DID                        string
-	SpaceKey                   string
-	CookieFile                 string
-	TokenFile                  string
-	Commit                     bool
-	AuthorityCertificateSHA256 string
+	Listen                          string
+	Provider                        string
+	Origin                          string
+	BasePath                        string
+	PublicHost                      string
+	DID                             string
+	SpaceKey                        string
+	CookieFile                      string
+	TokenFile                       string
+	Commit                          bool
+	AuthorityCertificateSHA256      string
+	SourceVersioningCertificateFile string
 }
 
 type virtualHostDoer struct {
@@ -73,6 +75,7 @@ func run(ctx context.Context, args []string) error {
 	flags.StringVar(&opts.TokenFile, "token-file", "", "absolute owner-only agent bearer token file")
 	flags.BoolVar(&opts.Commit, "commit", false, "allow writes to the exact private target")
 	flags.StringVar(&opts.AuthorityCertificateSHA256, "authority-certificate-sha256", "", "pinned authority certification evidence digest (enables v2 inventory/CAS)")
+	flags.StringVar(&opts.SourceVersioningCertificateFile, "source-versioning-certificate-file", "", "owner-only v2 authority evidence bound to this exact provider epoch")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -101,9 +104,23 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("verify exact HappyView mailbox: %w", err)
 	}
+	authorityCertificateSHA256 := opts.AuthorityCertificateSHA256
+	sourceVersioningCertified := false
+	if opts.SourceVersioningCertificateFile != "" {
+		digest, err := authoritycert.LoadEvidence(opts.SourceVersioningCertificateFile, repo.ProviderID(), target)
+		if err != nil {
+			return fmt.Errorf("verify source-versioning certificate: %w", err)
+		}
+		if authorityCertificateSHA256 != "" && authorityCertificateSHA256 != digest {
+			return errors.New("source-versioning evidence digest does not match the pinned authority certificate")
+		}
+		authorityCertificateSHA256 = digest
+		sourceVersioningCertified = true
+	}
 	handler, err := shadowagent.NewHandler(shadowagent.Config{
 		Token: token, DID: opts.DID, Target: target, Repository: repo,
-		AuthorityCertificateSHA256: opts.AuthorityCertificateSHA256,
+		AuthorityCertificateSHA256: authorityCertificateSHA256,
+		SourceVersioningCertified:  sourceVersioningCertified,
 	})
 	if err != nil {
 		return err
@@ -165,6 +182,9 @@ func validateOptions(opts options) error {
 		if err != nil || len(decoded) != sha256.Size || opts.AuthorityCertificateSHA256 != strings.ToLower(opts.AuthorityCertificateSHA256) {
 			return errors.New("authority certificate SHA-256 must be 64 lowercase hexadecimal characters")
 		}
+	}
+	if opts.SourceVersioningCertificateFile != "" && (!filepath.IsAbs(opts.SourceVersioningCertificateFile) || opts.SourceVersioningCertificateFile == string(filepath.Separator)) {
+		return errors.New("source-versioning certificate file must be an absolute file path")
 	}
 	return nil
 }

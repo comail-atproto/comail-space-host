@@ -101,11 +101,12 @@ func TestHappyViewCertificateMatchesPinnedEpoch(t *testing.T) {
 		Passed bool   `json:"passed"`
 		Scope  string `json:"scope"`
 		Checks struct {
-			Upstream string `json:"upstreamSpaceAuthAndRecordTests"`
-			Private  string `json:"privateNonMemberRead"`
-			Chunks   string `json:"comailPrivateChunkRoundTrip"`
-			Live     string `json:"liveSyntheticMigrationAndRebuild"`
-			LiveDeny string `json:"liveSyntheticNonMemberRead"`
+			Upstream      string `json:"upstreamSpaceAuthAndRecordTests"`
+			Private       string `json:"privateNonMemberRead"`
+			Chunks        string `json:"comailPrivateChunkRoundTrip"`
+			Live          string `json:"liveSyntheticMigrationAndRebuild"`
+			LiveDeny      string `json:"liveSyntheticNonMemberRead"`
+			SourceVersion string `json:"liveSourceVersionReplacement"`
 		} `json:"checks"`
 		Limitations struct {
 			NativeBlob string `json:"nativeBlobAuthority"`
@@ -116,7 +117,7 @@ func TestHappyViewCertificateMatchesPinnedEpoch(t *testing.T) {
 	}
 	if commit == "" || certificate.Epoch != commit || !certificate.Passed ||
 		certificate.Checks.Upstream != "31/31 pass" || certificate.Checks.Private != "pass" ||
-		certificate.Checks.Chunks != "pass" || certificate.Checks.Live != "pass" || certificate.Checks.LiveDeny != "pass" ||
+		certificate.Checks.Chunks != "pass" || certificate.Checks.Live != "pass" || certificate.Checks.LiveDeny != "pass" || certificate.Checks.SourceVersion != "pass" ||
 		!strings.Contains(certificate.Scope, "isolated") ||
 		!strings.Contains(certificate.Limitations.NativeBlob, "not certified") {
 		t.Fatalf("HappyView certificate does not bind the isolated pinned epoch: %#v commit=%q", certificate, commit)

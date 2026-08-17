@@ -82,6 +82,7 @@ type Write struct {
 	Collection string
 	RKey       string
 	Value      any
+	SwapCID    string
 }
 
 type WriteResult struct {

@@ -33,6 +33,7 @@ type Config struct {
 	Target                     repository.Target
 	Repository                 repository.Repository
 	AuthorityCertificateSHA256 string
+	SourceVersioningCertified  bool
 }
 
 type Handler struct {
@@ -41,6 +42,7 @@ type Handler struct {
 	target                     repository.Target
 	repo                       repository.Repository
 	authorityCertificateSHA256 string
+	sourceVersioningCertified  bool
 }
 
 type target struct {
@@ -61,6 +63,7 @@ type capabilities struct {
 	ConflictSafeState          bool   `json:"conflictSafeState"`
 	InventoryRebuild           bool   `json:"inventoryRebuild"`
 	Tombstones                 bool   `json:"tombstones"`
+	SourceVersioning           bool   `json:"sourceVersioning"`
 	AuthorityCertificateSHA256 string `json:"authorityCertificateSha256,omitempty"`
 }
 
@@ -97,6 +100,21 @@ type receipt struct {
 }
 
 type mirrorResponse struct {
+	Version int     `json:"version"`
+	Receipt receipt `json:"receipt"`
+}
+
+type captureRequest struct {
+	Version      int             `json:"version"`
+	Target       target          `json:"target"`
+	RecipientDID string          `json:"recipientDid"`
+	Mailbox      string          `json:"mailbox"`
+	Keywords     []string        `json:"keywords,omitempty"`
+	SourceKey    string          `json:"sourceKey"`
+	Message      protocolMessage `json:"message"`
+}
+
+type captureResponse struct {
 	Version int     `json:"version"`
 	Receipt receipt `json:"receipt"`
 }
@@ -174,9 +192,13 @@ func NewHandler(config Config) (*Handler, error) {
 	if config.AuthorityCertificateSHA256 != "" && !validSHA256(config.AuthorityCertificateSHA256) {
 		return nil, errors.New("shadow agent: invalid authority certificate digest")
 	}
+	if config.SourceVersioningCertified && config.AuthorityCertificateSHA256 == "" {
+		return nil, errors.New("shadow agent: source versioning requires an authority certificate")
+	}
 	return &Handler{
 		tokenHash: sha256.Sum256([]byte(config.Token)), did: config.DID,
 		target: config.Target, repo: config.Repository, authorityCertificateSHA256: config.AuthorityCertificateSHA256,
+		sourceVersioningCertified: config.SourceVersioningCertified,
 	}, nil
 }
 
@@ -203,6 +225,8 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		h.inventory(response, request)
 	case "/v2/state":
 		h.state(response, request)
+	case "/v2/capture":
+		h.capture(response, request)
 	default:
 		http.NotFound(response, request)
 	}
@@ -226,9 +250,221 @@ func (h *Handler) capability(response http.ResponseWriter, request *http.Request
 			IdempotentWrite: true, ReadAfterWrite: true, AtomicStateWrite: available.AtomicApplyWrites,
 			ConflictSafeState: available.CompareAndSwap && h.authorityCertificateSHA256 != "",
 			InventoryRebuild:  h.authorityCertificateSHA256 != "", Tombstones: h.authorityCertificateSHA256 != "",
+			SourceVersioning:           h.sourceVersioningCertified && available.AtomicApplyWrites && available.CompareAndSwap,
 			AuthorityCertificateSHA256: h.authorityCertificateSHA256,
 		},
 	})
+}
+
+func (h *Handler) capture(response http.ResponseWriter, request *http.Request) {
+	if h.authorityCertificateSHA256 == "" || !h.sourceVersioningCertified {
+		http.NotFound(response, request)
+		return
+	}
+	var input captureRequest
+	if decodeStrict(request.Body, &input) != nil || input.Version != AuthorityProtocolVersion ||
+		input.Target != h.targetView() || input.RecipientDID != h.did || len(input.Message.Raw) == 0 ||
+		len(input.Message.Raw) > mailbox.MaxRawMessageBytes || input.SourceKey == "" || len(input.SourceKey) > 512 ||
+		strings.ContainsAny(input.SourceKey, "\r\n\x00") || len(input.Keywords) > 128 {
+		http.Error(response, `{"error":"InvalidRequest"}`, http.StatusBadRequest)
+		return
+	}
+	input.Mailbox = canonicalCaptureMailbox(input.Mailbox)
+	if input.Mailbox == "" || !validKeywords(input.Keywords) {
+		http.Error(response, `{"error":"InvalidRequest"}`, http.StatusBadRequest)
+		return
+	}
+	receipt, err := h.captureAndVerify(request.Context(), input)
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, repository.ErrConflict) {
+			status = http.StatusConflict
+		}
+		http.Error(response, `{"error":"CaptureFailed"}`, status)
+		return
+	}
+	_ = json.NewEncoder(response).Encode(captureResponse{Version: AuthorityProtocolVersion, Receipt: receipt})
+}
+
+func (h *Handler) captureAndVerify(ctx context.Context, input captureRequest) (receipt, error) {
+	imported := mailbox.ImportedMessage{
+		RecipientDID: h.did, SourceKey: input.SourceKey, Raw: append([]byte(nil), input.Message.Raw...),
+		Mailbox: input.Mailbox, Keywords: append([]string(nil), input.Keywords...),
+	}
+	fingerprint := mailbox.ImportedFingerprint(imported)
+	if err := h.ensureFolder(ctx, input.Mailbox); err != nil {
+		return receipt{}, err
+	}
+	existing, err := h.repo.GetRecord(ctx, h.target, mailbox.MessageCollection, fingerprint)
+	if err == nil {
+		if err := h.requireSingleLiveSource(ctx, input.SourceKey, fingerprint); err != nil {
+			return receipt{}, err
+		}
+		if err := h.reconcileCapturedState(ctx, fingerprint, input.Mailbox, input.Keywords); err != nil {
+			return receipt{}, err
+		}
+		return h.verifyExisting(ctx, fingerprint, imported, existing)
+	}
+	if !errors.Is(err, repository.ErrNotFound) {
+		return receipt{}, err
+	}
+	if _, stateErr := h.repo.GetRecord(ctx, h.target, mailbox.MessageStateCollection, fingerprint); stateErr == nil {
+		return receipt{}, mailbox.ErrIntegrity
+	} else if !errors.Is(stateErr, repository.ErrNotFound) {
+		return receipt{}, stateErr
+	}
+
+	type priorVersion struct {
+		stateRecord repository.Record
+		state       mailbox.MessageStateRecord
+	}
+	var prior *priorVersion
+	messages, err := h.repo.ListRecords(ctx, h.target, mailbox.MessageCollection)
+	if err != nil {
+		return receipt{}, err
+	}
+	for _, stored := range messages {
+		var message mailbox.MessageRecord
+		if json.Unmarshal(stored.Value, &message) != nil || message.Type != mailbox.MessageCollection {
+			return receipt{}, mailbox.ErrIntegrity
+		}
+		if message.SourceKey != input.SourceKey || stored.RKey == fingerprint {
+			continue
+		}
+		storedState, err := h.repo.GetRecord(ctx, h.target, mailbox.MessageStateCollection, stored.RKey)
+		if err != nil {
+			return receipt{}, err
+		}
+		var state mailbox.MessageStateRecord
+		if json.Unmarshal(storedState.Value, &state) != nil || state.Type != mailbox.MessageStateCollection || state.Message != stored.RKey || state.Revision == 0 {
+			return receipt{}, mailbox.ErrIntegrity
+		}
+		if !state.Tombstone {
+			if prior != nil {
+				return receipt{}, mailbox.ErrIntegrity
+			}
+			prior = &priorVersion{stateRecord: storedState, state: state}
+		}
+	}
+
+	blob, err := h.repo.UploadBlob(ctx, h.target, imported.Raw, mailbox.MessageMIMEType)
+	if err != nil {
+		return receipt{}, err
+	}
+	pair, err := mailbox.NewMessagePair(imported, blob)
+	if err != nil {
+		return receipt{}, err
+	}
+	writes := []repository.Write{
+		{Action: repository.Create, Collection: mailbox.MessageCollection, RKey: pair.RKey, Value: pair.Message},
+		{Action: repository.Create, Collection: mailbox.MessageStateCollection, RKey: pair.RKey, Value: pair.State},
+	}
+	if prior != nil {
+		prior.state.Tombstone = true
+		prior.state.DeletePending = false
+		prior.state.Revision++
+		prior.state.LastOperation = "comail-jmap-version-" + fingerprint
+		prior.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		writes = append(writes, repository.Write{
+			Action: repository.Update, Collection: mailbox.MessageStateCollection,
+			RKey: prior.stateRecord.RKey, Value: prior.state, SwapCID: prior.stateRecord.CID,
+		})
+	}
+	if _, err := h.repo.ApplyWrites(ctx, h.target, writes); err != nil {
+		if errors.Is(err, repository.ErrExists) {
+			existing, getErr := h.repo.GetRecord(ctx, h.target, mailbox.MessageCollection, fingerprint)
+			if getErr == nil {
+				if err := h.requireSingleLiveSource(ctx, input.SourceKey, fingerprint); err != nil {
+					return receipt{}, err
+				}
+				if err := h.reconcileCapturedState(ctx, fingerprint, input.Mailbox, input.Keywords); err != nil {
+					return receipt{}, err
+				}
+				return h.verifyExisting(ctx, fingerprint, imported, existing)
+			}
+		}
+		return receipt{}, err
+	}
+	if err := h.requireSingleLiveSource(ctx, input.SourceKey, fingerprint); err != nil {
+		return receipt{}, err
+	}
+	existing, err = h.repo.GetRecord(ctx, h.target, mailbox.MessageCollection, fingerprint)
+	if err != nil {
+		return receipt{}, err
+	}
+	return h.verifyExisting(ctx, fingerprint, imported, existing)
+}
+
+func (h *Handler) reconcileCapturedState(ctx context.Context, fingerprint, mailboxName string, keywords []string) error {
+	stored, err := h.repo.GetRecord(ctx, h.target, mailbox.MessageStateCollection, fingerprint)
+	if err != nil {
+		return err
+	}
+	var state mailbox.MessageStateRecord
+	if json.Unmarshal(stored.Value, &state) != nil || state.Type != mailbox.MessageStateCollection ||
+		state.Message != fingerprint || state.Revision == 0 || state.Tombstone {
+		return mailbox.ErrIntegrity
+	}
+	desiredKeywords := append([]string(nil), keywords...)
+	sort.Strings(desiredKeywords)
+	desiredMailboxID := mailbox.FolderRKey(mailboxName)
+	if len(state.MailboxIDs) == 1 && state.MailboxIDs[0] == desiredMailboxID && sameStrings(state.Keywords, desiredKeywords) {
+		return nil
+	}
+	operationHash := rawSHA256([]byte(mailboxName + "\x00" + strings.Join(desiredKeywords, "\x00")))
+	_, err = mailboxstate.Replace(ctx, h.repo, h.target, mailboxstate.Replacement{
+		MessageRKey: fingerprint, ExpectedRevision: state.Revision,
+		OperationID: "comail-jmap-capture-" + operationHash,
+		Mailbox:     mailboxName, Keywords: desiredKeywords, Now: time.Now().UTC(),
+	})
+	return err
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Handler) requireSingleLiveSource(ctx context.Context, sourceKey, wantFingerprint string) error {
+	messages, err := h.repo.ListRecords(ctx, h.target, mailbox.MessageCollection)
+	if err != nil {
+		return err
+	}
+	live := 0
+	for _, stored := range messages {
+		var message mailbox.MessageRecord
+		if json.Unmarshal(stored.Value, &message) != nil {
+			return mailbox.ErrIntegrity
+		}
+		if message.SourceKey != sourceKey {
+			continue
+		}
+		stateRecord, err := h.repo.GetRecord(ctx, h.target, mailbox.MessageStateCollection, stored.RKey)
+		if err != nil {
+			return err
+		}
+		var state mailbox.MessageStateRecord
+		if json.Unmarshal(stateRecord.Value, &state) != nil || state.Message != stored.RKey {
+			return mailbox.ErrIntegrity
+		}
+		if !state.Tombstone {
+			live++
+			if stored.RKey != wantFingerprint {
+				return mailbox.ErrIntegrity
+			}
+		}
+	}
+	if live != 1 {
+		return mailbox.ErrIntegrity
+	}
+	return nil
 }
 
 func (h *Handler) mirror(response http.ResponseWriter, request *http.Request) {
@@ -365,6 +601,31 @@ func canonicalMailbox(value string) string {
 	default:
 		return ""
 	}
+}
+
+func canonicalCaptureMailbox(value string) string {
+	switch {
+	case strings.EqualFold(value, "draft"), strings.EqualFold(value, "drafts"):
+		return "Drafts"
+	case strings.EqualFold(value, "sent"):
+		return "Sent"
+	default:
+		return ""
+	}
+}
+
+func validKeywords(keywords []string) bool {
+	seen := make(map[string]struct{}, len(keywords))
+	for _, keyword := range keywords {
+		if keyword == "" || len(keyword) > 255 || strings.ContainsAny(keyword, "\r\n\x00") {
+			return false
+		}
+		if _, exists := seen[keyword]; exists {
+			return false
+		}
+		seen[keyword] = struct{}{}
+	}
+	return true
 }
 
 func rawSHA256(raw []byte) string {
