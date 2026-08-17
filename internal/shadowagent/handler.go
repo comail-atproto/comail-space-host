@@ -105,6 +105,7 @@ type messageSnapshot struct {
 	URI         string   `json:"uri"`
 	RKey        string   `json:"rkey"`
 	Fingerprint string   `json:"fingerprint"`
+	SourceKey   string   `json:"sourceKey,omitempty"`
 	SHA256      string   `json:"sha256"`
 	Size        int64    `json:"size"`
 	Mailbox     string   `json:"mailbox"`
@@ -504,7 +505,8 @@ func (h *Handler) inventoryMessages(ctx context.Context) ([]messageSnapshot, err
 		}
 		item := messageSnapshot{
 			URI:  h.target.SpaceURI + "/" + mailbox.MessageCollection + "/" + storedState.RKey,
-			RKey: storedState.RKey, Fingerprint: storedState.RKey, SHA256: message.SHA256, Size: message.Size,
+			RKey: storedState.RKey, Fingerprint: storedState.RKey, SourceKey: message.SourceKey,
+			SHA256: message.SHA256, Size: message.Size,
 			Mailbox: folder, Keywords: append([]string(nil), state.Keywords...), Revision: state.Revision, Tombstoned: state.Tombstone,
 		}
 		if !state.Tombstone {

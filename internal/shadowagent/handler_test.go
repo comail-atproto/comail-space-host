@@ -11,6 +11,7 @@ import (
 
 	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
 	"github.com/comail-atproto/comail-pds-lab/internal/memory"
+	"github.com/comail-atproto/comail-pds-lab/internal/repository"
 )
 
 const agentTestDID = "did:plc:comailshadowagenttest"
@@ -128,6 +129,66 @@ func TestHandlerAuthorityInventoryAndCASState(t *testing.T) {
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("stale conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
+}
+
+func TestHandlerAuthorityInventoryPreservesImportedSourceIdentity(t *testing.T) {
+	backend := memory.NewBackend()
+	repo := backend.OwnerSession(agentTestDID)
+	target, err := repo.EnsureMailbox(t.Context(), agentTestDID, "imported")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := strings.Repeat("a", 64)
+	handler, err := NewHandler(Config{
+		Token: "test-token", DID: agentTestDID, Target: target, Repository: repo,
+		AuthorityCertificateSHA256: certificate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireTarget := targetView(repo.ProviderID(), target, certificate)
+	if response := performAgentRequest(t, handler, "/v1/mirror", mirrorRequest{
+		Version: ProtocolVersion, Target: wireTarget, RecipientDID: agentTestDID,
+		Mailbox: "INBOX", Message: protocolMessage{Raw: []byte("Subject: seed\r\n\r\nseed")},
+	}); response.Code != http.StatusOK {
+		t.Fatalf("seed mirror status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	imported := mailbox.ImportedMessage{
+		RecipientDID: agentTestDID, SourceKey: "legacy:42",
+		Raw: []byte("Subject: imported\r\n\r\nbody"), Mailbox: "INBOX",
+	}
+	blob, err := repo.UploadBlob(t.Context(), target, imported.Raw, mailbox.MessageMIMEType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := mailbox.NewMessagePair(imported, blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ApplyWrites(t.Context(), target, []repository.Write{
+		{Action: repository.Create, Collection: mailbox.MessageCollection, RKey: pair.RKey, Value: pair.Message},
+		{Action: repository.Create, Collection: mailbox.MessageStateCollection, RKey: pair.RKey, Value: pair.State},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory := performAgentRequest(t, handler, "/v2/inventory", inventoryRequest{
+		Version: AuthorityProtocolVersion, Target: wireTarget, Limit: 100,
+	})
+	var listed inventoryResponse
+	if err := json.Unmarshal(inventory.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range listed.Messages {
+		if message.RKey == pair.RKey {
+			if message.SourceKey != imported.SourceKey {
+				t.Fatalf("source key = %q, want %q", message.SourceKey, imported.SourceKey)
+			}
+			return
+		}
+	}
+	t.Fatalf("imported message %q absent from inventory", pair.RKey)
 }
 
 func TestHandlerRejectsMissingTokenAndConfusedTarget(t *testing.T) {
