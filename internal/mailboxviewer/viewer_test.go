@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailboxstate"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/mailboxstate"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
 
 const testDID = "did:plc:comailmailboxviewertest"

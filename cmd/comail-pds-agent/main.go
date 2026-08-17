@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/comail-atproto/comail-pds-lab/internal/authoritycert"
-	"github.com/comail-atproto/comail-pds-lab/internal/providers/happyview"
-	"github.com/comail-atproto/comail-pds-lab/internal/shadowagent"
+	"github.com/comail-atproto/comail-space-host/internal/authoritycert"
+	"github.com/comail-atproto/comail-space-host/internal/providers/happyview"
+	"github.com/comail-atproto/comail-space-host/internal/shadowagent"
 )
 
 type options struct {

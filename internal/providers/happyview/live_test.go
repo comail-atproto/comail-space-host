@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/migrate"
-	"github.com/comail-atproto/comail-pds-lab/internal/projection"
-	"github.com/comail-atproto/comail-pds-lab/internal/providers/happyview"
-	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
-	"github.com/comail-atproto/comail-pds-lab/internal/synthetic"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/migrate"
+	"github.com/comail-atproto/comail-space-host/internal/projection"
+	"github.com/comail-atproto/comail-space-host/internal/providers/happyview"
+	"github.com/comail-atproto/comail-space-host/internal/sqliteimport"
+	"github.com/comail-atproto/comail-space-host/internal/synthetic"
 )
 
 const (

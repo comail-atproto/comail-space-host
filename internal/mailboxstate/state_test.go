@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/memory"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/memory"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
 
 func TestApplyPersistsConflictSafeMailboxState(t *testing.T) {

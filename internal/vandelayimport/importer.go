@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/sqliteimport"
 	"lukechampine.com/blake3"
 
 	_ "modernc.org/sqlite"

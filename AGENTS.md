@@ -1,21 +1,22 @@
-# Comail PDS Lab
+# Comail Space Host
 
-This repository is an isolated, non-production laboratory. It must not import
-runtime configuration from, deploy into, or modify any Comail production
-repository or service.
+This is the separately deployable permissioned-mailbox provider for Comail. It
+is production-capable code, but every deployment remains default-off and
+limited to explicitly provisioned DIDs and spaces.
 
 Safety invariants:
 
-- Never open a live mailbox SQLite database for migration. Accept only an
-  explicit, consistent snapshot path supplied by the operator.
-- Never log or serialize OAuth tokens, DPoP private keys, RFC 5322 bytes,
-  subjects, senders, recipients, or message bodies into evidence.
-- All provider targets are exact: PDS origin, account DID, space URI, and repo
-  DID must agree. Refuse redirects on authenticated requests.
-- The default command mode is dry-run. A live write requires both an explicit
-  provider and `--commit`.
-- Tests use synthetic identities and messages only.
-- Production promotion is out of scope. Results from this repository are input
-  to a later Comail feature-branch review.
+- Never persist browser cookies or user OAuth tokens in the adapter.
+- Provider access uses short-lived AT Protocol service-auth JWTs and an exact
+  service DID, audience fragment, provider origin, mailbox DID, and space URI.
+- The relay-to-adapter bearer secret and adapter signing key are separate,
+  owner-only credentials. Neither belongs in Git, Nix store paths, logs, or
+  error responses.
+- One process may serve multiple explicitly configured mailboxes, but request
+  input can never select an unconfigured target.
+- Authenticated HTTP requests never follow redirects. Production requires
+  certificate-verified HTTPS; loopback HTTP exists only in tests.
+- Deploy through a reviewed branch, green CI, and the Comail GitOps path.
+- Tests use synthetic identities and message bytes only.
 
 Use test-first changes, `gofmt`, `go test ./...`, and `go vet ./...`.

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/comail-atproto/comail-pds-lab/internal/mailboxviewer"
+	"github.com/comail-atproto/comail-space-host/internal/mailboxviewer"
 )
 
 type options struct {

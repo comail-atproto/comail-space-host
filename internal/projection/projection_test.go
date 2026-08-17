@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/mailboxstate"
-	"github.com/comail-atproto/comail-pds-lab/internal/memory"
-	"github.com/comail-atproto/comail-pds-lab/internal/migrate"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
-	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
-	"github.com/comail-atproto/comail-pds-lab/internal/synthetic"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/mailboxstate"
+	"github.com/comail-atproto/comail-space-host/internal/memory"
+	"github.com/comail-atproto/comail-space-host/internal/migrate"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/sqliteimport"
+	"github.com/comail-atproto/comail-space-host/internal/synthetic"
 
 	_ "modernc.org/sqlite"
 )

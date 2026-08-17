@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 )
 
 func TestMailboxScopesAreExactAndCollectionLimited(t *testing.T) {

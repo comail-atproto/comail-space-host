@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
-	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/sqliteimport"
 )
 
 func Verify(ctx context.Context, snapshot SourceSnapshot, space sqliteimport.Space, repo repository.Repository, target repository.Target) (Verification, error) {

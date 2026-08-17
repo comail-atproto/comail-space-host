@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 
 	_ "modernc.org/sqlite"
 )

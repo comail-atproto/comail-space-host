@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 )
 
 var (

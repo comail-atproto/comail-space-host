@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/memory"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/memory"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
 
 const agentTestDID = "did:plc:comailshadowagenttest"
@@ -341,14 +341,61 @@ func TestNewHandlerRejectsBroadOrIncompleteConfiguration(t *testing.T) {
 	}
 }
 
+func TestMultiplexerRoutesOnlyExactConfiguredMailboxTargets(t *testing.T) {
+	backend := memory.NewBackend()
+	const secondDID = "did:plc:comailshadowagentsecond"
+	firstRepo := backend.OwnerSession(agentTestDID)
+	secondRepo := backend.OwnerSession(secondDID)
+	firstTarget, _ := firstRepo.EnsureMailbox(t.Context(), agentTestDID, "default")
+	secondTarget, _ := secondRepo.EnsureMailbox(t.Context(), secondDID, "default")
+	first, _ := NewHandler(Config{Token: "shared-test-token", DID: agentTestDID, Target: firstTarget, Repository: firstRepo})
+	second, _ := NewHandler(Config{Token: "shared-test-token", DID: secondDID, Target: secondTarget, Repository: secondRepo})
+	mux, err := NewMultiplexer(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for did, configured := range map[string]repository.Target{agentTestDID: firstTarget, secondDID: secondTarget} {
+		response := performAgentRequestWithToken(t, mux, "/v1/mirror", mirrorRequest{
+			Version: ProtocolVersion, Target: targetView(firstRepo.ProviderID(), configured), RecipientDID: did,
+			Mailbox: "inbox", Message: protocolMessage{Raw: []byte("Subject: " + did + "\r\n\r\nbody")},
+		}, "shared-test-token")
+		if response.Code != http.StatusOK {
+			t.Fatalf("did=%s status=%d body=%s", did, response.Code, response.Body.String())
+		}
+	}
+	wrong := targetView(firstRepo.ProviderID(), firstTarget)
+	wrong.SpaceURI += "-unknown"
+	response := performAgentRequestWithToken(t, mux, "/v1/capabilities", capabilityRequest{Version: ProtocolVersion, Target: wrong}, "shared-test-token")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown target status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMultiplexerRejectsHandlersWithDifferentRelayTokens(t *testing.T) {
+	backend := memory.NewBackend()
+	firstRepo := backend.OwnerSession(agentTestDID)
+	firstTarget, _ := firstRepo.EnsureMailbox(t.Context(), agentTestDID, "default")
+	first, _ := NewHandler(Config{Token: "first-token", DID: agentTestDID, Target: firstTarget, Repository: firstRepo})
+	secondRepo := backend.OwnerSession("did:plc:second")
+	secondTarget, _ := secondRepo.EnsureMailbox(t.Context(), "did:plc:second", "default")
+	second, _ := NewHandler(Config{Token: "second-token", DID: "did:plc:second", Target: secondTarget, Repository: secondRepo})
+	if _, err := NewMultiplexer(first, second); err == nil {
+		t.Fatal("multiplexer accepted handlers with different relay tokens")
+	}
+}
+
 func performAgentRequest(t *testing.T, handler http.Handler, path string, body any) *httptest.ResponseRecorder {
+	return performAgentRequestWithToken(t, handler, path, body, "test-token")
+}
+
+func performAgentRequestWithToken(t *testing.T, handler http.Handler, path string, body any, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
-	request.Header.Set("Authorization", "Bearer test-token")
+	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

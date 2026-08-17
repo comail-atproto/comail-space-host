@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/memory"
+	"github.com/comail-atproto/comail-space-host/internal/memory"
 )
 
 func TestRunProvesImmutableStateCASRecoveryAndTombstone(t *testing.T) {

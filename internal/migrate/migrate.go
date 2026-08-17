@@ -10,9 +10,9 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
-	"github.com/comail-atproto/comail-pds-lab/internal/sqliteimport"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/sqliteimport"
 )
 
 type Options struct {

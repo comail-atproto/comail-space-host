@@ -15,8 +15,8 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
 
 const (
@@ -178,6 +178,24 @@ func (c *Client) EnsureMailbox(ctx context.Context, recipientDID, key string) (r
 	if out.URI != target.SpaceURI {
 		return repository.Target{}, fmt.Errorf("%w: createSpace returned unexpected URI", repository.ErrTarget)
 	}
+	if err := c.verifyMailboxSpace(ctx, target); err != nil {
+		return repository.Target{}, err
+	}
+	return target, nil
+}
+
+// OpenMailbox verifies an already-provisioned mailbox without attempting to
+// create it. Production adapters use this with a service-auth identity that is
+// an explicit write member of the user's private space; initial ownership and
+// membership grants remain user-controlled operations.
+func (c *Client) OpenMailbox(ctx context.Context, recipientDID, key string) (repository.Target, error) {
+	if err := c.requireWrites(); err != nil {
+		return repository.Target{}, err
+	}
+	if recipientDID != c.did || !validKey(key) {
+		return repository.Target{}, repository.ErrTarget
+	}
+	target := repository.Target{ProviderOrigin: c.origin, SpaceURI: fmt.Sprintf("at://%s/space/%s/%s", c.did, mailbox.MailboxSpaceType, key), RepoDID: c.did, Epoch: c.epoch}
 	if err := c.verifyMailboxSpace(ctx, target); err != nil {
 		return repository.Target{}, err
 	}

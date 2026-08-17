@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
 
 const (
@@ -101,6 +101,18 @@ func TestEnsureMailboxRejectsExistingPublicSpace(t *testing.T) {
 	client := testClient(t, doer)
 	if _, err := client.EnsureMailbox(context.Background(), testDID, "primary"); !errors.Is(err, repository.ErrTarget) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestOpenMailboxVerifiesPreprovisionedPrivateSpaceWithoutCreating(t *testing.T) {
+	doer := &scriptedDoer{responses: []scriptedResponse{{200, privateMailboxSpaceResponse()}}}
+	client := testClient(t, doer)
+	target, err := client.OpenMailbox(t.Context(), testDID, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != testTarget() || len(doer.requests) != 1 || doer.requests[0].Endpoint != getSpaceNSID {
+		t.Fatalf("target=%#v requests=%#v", target, doer.requests)
 	}
 }
 

@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/comail-atproto/comail-pds-lab/internal/mailbox"
-	"github.com/comail-atproto/comail-pds-lab/internal/mailboxstate"
-	"github.com/comail-atproto/comail-pds-lab/internal/providers/happyview"
-	"github.com/comail-atproto/comail-pds-lab/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
+	"github.com/comail-atproto/comail-space-host/internal/mailboxstate"
+	"github.com/comail-atproto/comail-space-host/internal/providers/happyview"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
 
 type HappyViewConfig struct {
