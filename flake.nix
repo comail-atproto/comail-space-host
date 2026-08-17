@@ -44,6 +44,7 @@
               cp -R migrations $out/share/happyview/migrations
               cp -R ${happyviewWeb} $out/share/happyview/web
             '';
+            meta.mainProgram = "happyview";
           };
         in {
           default = pkgs.buildGoModule {
