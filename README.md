@@ -40,9 +40,9 @@ the deployment layer.
 ```json
 {
   "listen": "127.0.0.1:39094",
-  "providerOrigin": "https://spaces.inbox.comail.at",
-  "serviceIssuerDid": "did:web:mailbox-adapter.comail.at",
-  "serviceAudience": "did:web:spaces.inbox.comail.at#mailbox",
+  "providerOrigin": "https://inbox.comail.at/spaces",
+  "serviceIssuerDid": "did:web:inbox.comail.at:mailbox-adapter",
+  "serviceAudience": "did:web:inbox.comail.at#mailbox",
   "serviceKeyFile": "/run/credentials/comail-space-host/service-key.pem",
   "relayTokenFile": "/run/credentials/comail-space-host/relay-token",
   "mailboxes": [

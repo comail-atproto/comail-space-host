@@ -21,8 +21,8 @@
             src = "${happyview-src}/web";
             npmDepsHash = "sha256-4sjYgU/tVGSy+pOl4hMCNMbYCYXYm3uoq9D4bxR0qv0=";
             env = {
-              NEXT_PUBLIC_BASE_PATH = "";
-              NEXT_PUBLIC_OAUTH_CLIENT_ID = "https://spaces.inbox.comail.at/oauth-client-metadata.json";
+              NEXT_PUBLIC_BASE_PATH = "/spaces";
+              NEXT_PUBLIC_OAUTH_CLIENT_ID = "https://inbox.comail.at/spaces/oauth-client-metadata.json";
             };
             installPhase = ''
               runHook preInstall

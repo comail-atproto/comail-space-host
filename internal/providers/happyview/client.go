@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"reflect"
 	"strings"
 
@@ -729,13 +730,13 @@ func parseSpaceURI(raw string) (authority, spaceType, key string, ok bool) {
 
 func cleanOrigin(raw string, allowHTTP bool) (string, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return "", errors.New("happyview: provider origin must be a clean origin")
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" ||
+		(u.Path != "" && (u.Path == "/" || path.Clean(u.Path) != u.Path || strings.HasSuffix(u.Path, "/"))) {
+		return "", errors.New("happyview: provider origin must be a clean HTTPS base URL")
 	}
 	if u.Scheme != "https" && (!allowHTTP || u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
 		return "", errors.New("happyview: provider origin must use HTTPS (HTTP is loopback-only)")
 	}
-	u.Path = ""
 	return strings.TrimSuffix(u.String(), "/"), nil
 }
 

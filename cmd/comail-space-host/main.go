@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -182,8 +183,10 @@ func validateConfig(configured config) error {
 		return errors.New("listener must use exact IPv4 loopback")
 	}
 	origin, err := url.Parse(configured.ProviderOrigin)
-	if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.Path != "" || origin.RawQuery != "" || origin.Fragment != "" {
-		return errors.New("provider origin must be an exact HTTPS origin")
+	if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.RawPath != "" ||
+		origin.RawQuery != "" || origin.Fragment != "" || origin.Path == "/" ||
+		(origin.Path != "" && (path.Clean(origin.Path) != origin.Path || strings.HasSuffix(origin.Path, "/"))) {
+		return errors.New("provider origin must be an exact HTTPS base URL")
 	}
 	if !strings.HasPrefix(configured.ServiceIssuerDID, "did:web:") || !strings.HasPrefix(configured.ServiceAudience, "did:web:") || !strings.Contains(configured.ServiceAudience, "#") {
 		return errors.New("service issuer and audience must be exact did:web identifiers")

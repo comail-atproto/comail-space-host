@@ -25,9 +25,9 @@ func TestLoadConfigRequiresExactUniqueMailboxesAndSeparateSecrets(t *testing.T) 
 	configPath := filepath.Join(dir, "config.json")
 	configJSON := `{
 		"listen":"127.0.0.1:39094",
-		"providerOrigin":"https://spaces.inbox.comail.at",
-		"serviceIssuerDid":"did:web:mailbox-adapter.comail.at",
-		"serviceAudience":"did:web:spaces.inbox.comail.at#mailbox",
+		"providerOrigin":"https://inbox.comail.at/spaces",
+		"serviceIssuerDid":"did:web:inbox.comail.at:mailbox-adapter",
+		"serviceAudience":"did:web:inbox.comail.at#mailbox",
 		"serviceKeyFile":` + quote(keyPath) + `,
 		"relayTokenFile":` + quote(tokenPath) + `,
 		"mailboxes":[{"did":"did:plc:alpha","spaceKey":"default","authorityCertificateSha256":"` + strings.Repeat("a", 64) + `","evidenceFile":` + quote(evidencePath) + `}]
@@ -50,8 +50,8 @@ func TestLoadConfigRequiresExactUniqueMailboxesAndSeparateSecrets(t *testing.T) 
 
 func TestValidateConfigRejectsPublicListenerAndNonHTTPSProvider(t *testing.T) {
 	base := config{
-		Listen: "127.0.0.1:39094", ProviderOrigin: "https://spaces.inbox.comail.at",
-		ServiceIssuerDID: "did:web:mailbox-adapter.comail.at", ServiceAudience: "did:web:spaces.inbox.comail.at#mailbox",
+		Listen: "127.0.0.1:39094", ProviderOrigin: "https://inbox.comail.at/spaces",
+		ServiceIssuerDID: "did:web:inbox.comail.at:mailbox-adapter", ServiceAudience: "did:web:inbox.comail.at#mailbox",
 		ServiceKeyFile: "/run/credentials/key", RelayTokenFile: "/run/credentials/token",
 		Mailboxes: []mailboxConfig{{DID: "did:plc:alpha", SpaceKey: "default", AuthorityCertificateSHA256: strings.Repeat("a", 64), EvidenceFile: "/run/credentials/evidence"}},
 	}
@@ -61,7 +61,7 @@ func TestValidateConfigRejectsPublicListenerAndNonHTTPSProvider(t *testing.T) {
 		t.Fatal("public listener accepted")
 	}
 	badOrigin := base
-	badOrigin.ProviderOrigin = "http://spaces.inbox.comail.at"
+	badOrigin.ProviderOrigin = "http://inbox.comail.at/spaces"
 	if validateConfig(badOrigin) == nil {
 		t.Fatal("non-HTTPS provider accepted")
 	}
