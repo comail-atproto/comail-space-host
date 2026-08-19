@@ -11,7 +11,8 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
-    in {
+    in
+    {
       packages = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -49,7 +50,8 @@
             '';
             meta.mainProgram = "happyview";
           };
-        in {
+        in
+        {
           default = pkgs.buildGoModule {
             pname = "comail-space-host";
             version = "0.1.0";
@@ -67,18 +69,15 @@
         let
           cfg = config.services.comail-space-host;
           credentialDir = "/run/credentials/comail-space-host.service";
-          mailboxJSON = mailbox: {
-            inherit (mailbox) did spaceKey authorityCertificateSha256;
-            evidenceFile = "${credentialDir}/evidence-${mailbox.credentialName}";
-          };
           configFile = pkgs.writeText "comail-space-host.json" (builtins.toJSON {
-            inherit (cfg) listen providerOrigin serviceIssuerDid serviceAudience;
+            inherit (cfg) listen providerOrigin serviceIssuerDid serviceAudience authorityCertificateSha256;
             serviceKeyFile = "${credentialDir}/service-key";
             relayTokenFile = "${credentialDir}/relay-token";
-            mailboxes = map mailboxJSON cfg.mailboxes;
+            evidenceFile = "${credentialDir}/provider-evidence";
             shutdownSeconds = 10;
           });
-        in {
+        in
+        {
           options.services.comail-space-host = {
             enable = lib.mkEnableOption "Comail permissioned mailbox adapter";
             package = lib.mkOption {
@@ -92,24 +91,13 @@
             serviceAudience = lib.mkOption { type = lib.types.str; };
             serviceKeyFile = lib.mkOption { type = lib.types.path; description = "Runtime source for the owner-only P-256 PKCS#8 key."; };
             relayTokenFile = lib.mkOption { type = lib.types.path; description = "Runtime source for the independent relay bearer token."; };
-            mailboxes = lib.mkOption {
-              default = [];
-              type = lib.types.listOf (lib.types.submodule ({ ... }: {
-                options = {
-                  did = lib.mkOption { type = lib.types.str; };
-                  spaceKey = lib.mkOption { type = lib.types.str; default = "default"; };
-                  authorityCertificateSha256 = lib.mkOption { type = lib.types.str; };
-                  credentialName = lib.mkOption { type = lib.types.strMatching "[a-z0-9-]+"; };
-                  evidenceFile = lib.mkOption { type = lib.types.path; description = "Runtime source for owner-only authority evidence."; };
-                };
-              }));
-            };
+            authorityCertificateSha256 = lib.mkOption { type = lib.types.strMatching "[0-9a-f]{64}"; description = "Digest of the exact provider-epoch authority evidence."; };
+            evidenceFile = lib.mkOption { type = lib.types.path; description = "Runtime source for owner-only provider-epoch authority evidence."; };
           };
 
           config = lib.mkIf cfg.enable {
             assertions = [
               { assertion = lib.hasPrefix "https://" cfg.providerOrigin; message = "comail-space-host providerOrigin must use HTTPS"; }
-              { assertion = cfg.mailboxes != []; message = "comail-space-host requires at least one explicit mailbox"; }
             ];
             systemd.services.comail-space-host = {
               description = "Comail permissioned mailbox adapter";
@@ -121,7 +109,8 @@
                 LoadCredential = [
                   "service-key:${toString cfg.serviceKeyFile}"
                   "relay-token:${toString cfg.relayTokenFile}"
-                ] ++ map (mailbox: "evidence-${mailbox.credentialName}:${toString mailbox.evidenceFile}") cfg.mailboxes;
+                  "provider-evidence:${toString cfg.evidenceFile}"
+                ];
                 DynamicUser = true;
                 Restart = "on-failure";
                 RestartSec = "5s";

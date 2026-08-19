@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	testDID    = "did:plc:happyviewtest"
-	testOrigin = "http://127.0.0.1:19090"
-	testEpoch  = CertifiedEpoch
+	testDID       = "did:plc:happyviewtest"
+	testWriterDID = "did:web:adapter.example.test"
+	testOrigin    = "http://127.0.0.1:19090"
+	testEpoch     = CertifiedEpoch
 )
 
 type capturedRequest struct {
@@ -57,7 +58,10 @@ func (d *scriptedDoer) Do(_ context.Context, req *http.Request, endpoint string)
 
 func testClient(t *testing.T, doer Doer) *Client {
 	t.Helper()
-	client, err := New(Config{Origin: testOrigin, DID: testDID, Epoch: testEpoch, AllowHTTP: true, AllowWrites: true}, doer)
+	client, err := New(Config{
+		Origin: testOrigin, DID: testDID, Epoch: testEpoch, AllowHTTP: true, AllowWrites: true,
+		RequiredWriterDID: testWriterDID,
+	}, doer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,14 +109,28 @@ func TestEnsureMailboxRejectsExistingPublicSpace(t *testing.T) {
 }
 
 func TestOpenMailboxVerifiesPreprovisionedPrivateSpaceWithoutCreating(t *testing.T) {
-	doer := &scriptedDoer{responses: []scriptedResponse{{200, privateMailboxSpaceResponse()}}}
+	doer := &scriptedDoer{responses: []scriptedResponse{
+		{200, privateMailboxSpaceResponse()},
+		{200, `{"members":[{"did":"` + testDID + `","access":"write"},{"did":"` + testWriterDID + `","access":"write"}]}`},
+	}}
 	client := testClient(t, doer)
 	target, err := client.OpenMailbox(t.Context(), testDID, "primary")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target != testTarget() || len(doer.requests) != 1 || doer.requests[0].Endpoint != getSpaceNSID {
+	if target != testTarget() || len(doer.requests) != 2 || doer.requests[0].Endpoint != getSpaceNSID || doer.requests[1].Endpoint != listMembersNSID {
 		t.Fatalf("target=%#v requests=%#v", target, doer.requests)
+	}
+}
+
+func TestOpenMailboxRejectsReadOnlyRequiredWriter(t *testing.T) {
+	doer := &scriptedDoer{responses: []scriptedResponse{
+		{200, privateMailboxSpaceResponse()},
+		{200, `{"members":[{"did":"` + testDID + `","access":"write"},{"did":"` + testWriterDID + `","access":"read"}]}`},
+	}}
+	client := testClient(t, doer)
+	if _, err := client.OpenMailbox(t.Context(), testDID, "primary"); !errors.Is(err, repository.ErrUnauthorized) {
+		t.Fatalf("read-only writer error = %v", err)
 	}
 }
 

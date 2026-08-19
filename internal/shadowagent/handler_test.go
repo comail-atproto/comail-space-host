@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -381,6 +382,77 @@ func TestMultiplexerRejectsHandlersWithDifferentRelayTokens(t *testing.T) {
 	second, _ := NewHandler(Config{Token: "second-token", DID: "did:plc:second", Target: secondTarget, Repository: secondRepo})
 	if _, err := NewMultiplexer(first, second); err == nil {
 		t.Fatal("multiplexer accepted handlers with different relay tokens")
+	}
+}
+
+func TestResolvingMultiplexerRoutesExactTargetsWithoutStaticMailboxList(t *testing.T) {
+	backend := memory.NewBackend()
+	const secondDID = "did:plc:comailshadowagentdynamic"
+	firstRepo := backend.OwnerSession(agentTestDID)
+	secondRepo := backend.OwnerSession(secondDID)
+	firstTarget, _ := firstRepo.EnsureMailbox(t.Context(), agentTestDID, "default")
+	secondTarget, _ := secondRepo.EnsureMailbox(t.Context(), secondDID, "default")
+	first, _ := NewHandler(Config{Token: "shared-test-token", DID: agentTestDID, Target: firstTarget, Repository: firstRepo})
+	second, _ := NewHandler(Config{Token: "shared-test-token", DID: secondDID, Target: secondTarget, Repository: secondRepo})
+	handlers := map[RouteTarget]*Handler{
+		first.targetView():  first,
+		second.targetView(): second,
+	}
+	resolved := 0
+	mux, err := NewResolvingMultiplexer("shared-test-token", func(_ context.Context, requested RouteTarget) (*Handler, error) {
+		resolved++
+		handler := handlers[requested]
+		if handler == nil {
+			return nil, errors.New("unknown target")
+		}
+		return handler, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for did, configured := range map[string]repository.Target{agentTestDID: firstTarget, secondDID: secondTarget} {
+		response := performAgentRequestWithToken(t, mux, "/v1/mirror", mirrorRequest{
+			Version: ProtocolVersion, Target: targetView(firstRepo.ProviderID(), configured), RecipientDID: did,
+			Mailbox: "inbox", Message: protocolMessage{Raw: []byte("Subject: dynamic\r\n\r\nbody")},
+		}, "shared-test-token")
+		if response.Code != http.StatusOK {
+			t.Fatalf("did=%s status=%d body=%s", did, response.Code, response.Body.String())
+		}
+	}
+	unknown := first.targetView()
+	unknown.SpaceURI += "-unknown"
+	if response := performAgentRequestWithToken(t, mux, "/v1/capabilities", capabilityRequest{Version: ProtocolVersion, Target: unknown}, "shared-test-token"); response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown target status=%d body=%s", response.Code, response.Body.String())
+	}
+	beforeUnauthorized := resolved
+	if response := performAgentRequestWithToken(t, mux, "/v1/capabilities", capabilityRequest{Version: ProtocolVersion, Target: first.targetView()}, "wrong-token"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", response.Code, response.Body.String())
+	}
+	if resolved != beforeUnauthorized {
+		t.Fatal("unauthorized request reached dynamic resolver")
+	}
+}
+
+func TestResolvingMultiplexerRejectsResolverTargetOrTokenConfusion(t *testing.T) {
+	backend := memory.NewBackend()
+	repo := backend.OwnerSession(agentTestDID)
+	target, _ := repo.EnsureMailbox(t.Context(), agentTestDID, "default")
+	wrongTarget := target
+	wrongTarget.SpaceURI += "-other"
+	wrongHandler, _ := NewHandler(Config{Token: "shared-test-token", DID: agentTestDID, Target: wrongTarget, Repository: repo})
+	wrongToken, _ := NewHandler(Config{Token: "different-token", DID: agentTestDID, Target: target, Repository: repo})
+	requested := targetView(repo.ProviderID(), target)
+	for name, resolved := range map[string]*Handler{"target": wrongHandler, "token": wrongToken} {
+		mux, err := NewResolvingMultiplexer("shared-test-token", func(context.Context, RouteTarget) (*Handler, error) {
+			return resolved, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := performAgentRequestWithToken(t, mux, "/v1/capabilities", capabilityRequest{Version: ProtocolVersion, Target: requested}, "shared-test-token")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s confusion status=%d body=%s", name, response.Code, response.Body.String())
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -25,6 +28,7 @@ const tokenLifetime = 60 * time.Second
 type Config struct {
 	IssuerDID         string
 	Audience          string
+	Origin            string
 	Key               *ecdsa.PrivateKey
 	HTTPClient        *http.Client
 	AllowLoopbackHTTP bool
@@ -34,6 +38,7 @@ type Config struct {
 type Signer struct {
 	issuerDID         string
 	audience          string
+	origin            *url.URL
 	key               *ecdsa.PrivateKey
 	http              *http.Client
 	allowLoopbackHTTP bool
@@ -55,12 +60,27 @@ type Document struct {
 }
 
 func New(config Config) (*Signer, error) {
-	if !validDIDWeb(config.IssuerDID) || !validAudience(config.Audience) || config.Key == nil || config.Key.Curve != elliptic.P256() || config.Key.D == nil {
+	origin, err := cleanOrigin(config.Origin, config.AllowLoopbackHTTP)
+	if !validDIDWeb(config.IssuerDID) || !validAudience(config.Audience) || err != nil || config.Key == nil || config.Key.Curve != elliptic.P256() || config.Key.D == nil {
 		return nil, errors.New("serviceauth: exact did:web issuer, audience fragment, and P-256 key are required")
 	}
 	hc := config.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 45 * time.Second}
+		hc = &http.Client{
+			Transport: &http.Transport{
+				Proxy: nil,
+				DialContext: (&net.Dialer{
+					Timeout: 10 * time.Second, KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          10,
+				IdleConnTimeout:       30 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+			},
+			Timeout: 45 * time.Second,
+		}
 	}
 	copyClient := *hc
 	if copyClient.Timeout == 0 {
@@ -74,9 +94,24 @@ func New(config Config) (*Signer, error) {
 		now = time.Now
 	}
 	return &Signer{
-		issuerDID: config.IssuerDID, audience: config.Audience, key: config.Key,
+		issuerDID: config.IssuerDID, audience: config.Audience, origin: origin, key: config.Key,
 		http: &copyClient, allowLoopbackHTTP: config.AllowLoopbackHTTP, now: now,
 	}, nil
+}
+
+func cleanOrigin(value string, allowLoopbackHTTP bool) (*url.URL, error) {
+	if value == "" {
+		return nil, nil
+	}
+	origin, err := url.Parse(value)
+	if err != nil || origin.Hostname() == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || origin.RawPath != "" ||
+		(origin.Path != "" && (origin.Path == "/" || path.Clean(origin.Path) != origin.Path || strings.HasSuffix(origin.Path, "/"))) {
+		return nil, errors.New("serviceauth: provider origin must be exact")
+	}
+	if origin.Scheme != "https" && !(allowLoopbackHTTP && origin.Scheme == "http" && isLoopback(origin.Hostname())) {
+		return nil, errors.New("serviceauth: provider origin must use HTTPS")
+	}
+	return origin, nil
 }
 
 func validDIDWeb(value string) bool {
@@ -89,7 +124,8 @@ func validAudience(value string) bool {
 }
 
 func (s *Signer) Do(ctx context.Context, request *http.Request, endpoint string) (*http.Response, error) {
-	if request == nil || request.URL == nil || endpoint == "" || request.URL.Path != "/xrpc/"+endpoint {
+	if request == nil || request.URL == nil || s.origin == nil || endpoint == "" || !sameOrigin(request.URL, s.origin) ||
+		request.URL.Path != s.origin.Path+"/xrpc/"+endpoint {
 		return nil, errors.New("serviceauth: exact XRPC request and method are required")
 	}
 	if request.URL.Scheme != "https" {
@@ -113,6 +149,25 @@ func (s *Signer) Do(ctx context.Context, request *http.Request, endpoint string)
 	clone.Header = request.Header.Clone()
 	clone.Header.Set("Authorization", "Bearer "+signed)
 	return s.http.Do(clone)
+}
+
+func sameOrigin(actual, expected *url.URL) bool {
+	return actual != nil && expected != nil && actual.User == nil &&
+		strings.EqualFold(actual.Scheme, expected.Scheme) && strings.EqualFold(actual.Hostname(), expected.Hostname()) &&
+		effectivePort(actual) == effectivePort(expected)
+}
+
+func effectivePort(value *url.URL) string {
+	if value.Port() != "" {
+		return value.Port()
+	}
+	if value.Scheme == "https" {
+		return "443"
+	}
+	if value.Scheme == "http" {
+		return "80"
+	}
+	return ""
 }
 
 func isLoopback(host string) bool {

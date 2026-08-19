@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -41,12 +42,12 @@ func TestDoMintsShortLivedEndpointBoundServiceJWT(t *testing.T) {
 	defer server.Close()
 	signer, err := New(Config{
 		IssuerDID: "did:web:adapter.example.test", Audience: "did:web:spaces.example.test#mailbox",
-		Key: key, HTTPClient: server.Client(), AllowLoopbackHTTP: true, Now: func() time.Time { return time.Unix(1_700_000_000, 0) },
+		Key: key, Origin: server.URL + "/spaces", HTTPClient: server.Client(), AllowLoopbackHTTP: true, Now: func() time.Time { return time.Unix(1_700_000_000, 0) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/xrpc/com.atproto.space.applyWrites", nil)
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/spaces/xrpc/com.atproto.space.applyWrites", nil)
 	resp, err := signer.Do(context.Background(), req, "com.atproto.space.applyWrites")
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +55,18 @@ func TestDoMintsShortLivedEndpointBoundServiceJWT(t *testing.T) {
 	_ = resp.Body.Close()
 	if claims["iss"] != "did:web:adapter.example.test" || claims["aud"] != "did:web:spaces.example.test#mailbox" || claims["lxm"] != "com.atproto.space.applyWrites" || claims["exp"] != float64(1_700_000_060) {
 		t.Fatalf("claims=%#v", claims)
+	}
+	escaped, _ := http.NewRequest(http.MethodPost, server.URL+"/other/xrpc/com.atproto.space.applyWrites", nil)
+	if _, err := signer.Do(context.Background(), escaped, "com.atproto.space.applyWrites"); err == nil {
+		t.Fatal("signer accepted XRPC request outside pinned provider base path")
+	}
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("request escaped pinned provider origin")
+	}))
+	defer other.Close()
+	wrongOrigin, _ := http.NewRequest(http.MethodPost, other.URL+"/spaces/xrpc/com.atproto.space.applyWrites", nil)
+	if _, err := signer.Do(context.Background(), wrongOrigin, "com.atproto.space.applyWrites"); err == nil {
+		t.Fatal("signer accepted XRPC request on a different origin")
 	}
 }
 
@@ -79,6 +92,21 @@ func TestNewRejectsUnpinnedServiceIdentity(t *testing.T) {
 		if _, err := New(config); err == nil {
 			t.Fatalf("accepted config=%#v", config)
 		}
+	}
+}
+
+func TestNewDefaultClientDoesNotInheritProxySettings(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	signer, err := New(Config{
+		IssuerDID: "did:web:adapter.example.test", Audience: "did:web:spaces.example.test#mailbox",
+		Origin: "https://spaces.example.test/spaces", Key: key,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := signer.http.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil || transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+		t.Fatalf("default transport is not hardened: %#v", signer.http.Transport)
 	}
 }
 
