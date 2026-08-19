@@ -84,8 +84,9 @@ under ignored, mode-0700 `state/`; the source archive is retained as rollback.
 Production changes only after the operator proof is green. They are needed to:
 
 1. bind a gated account to a provider epoch and exact mailbox space;
-2. provision and verify the adapter service-DID write membership at login,
-   without retaining the browser OAuth session in the adapter;
+2. provision the adapter service-DID write membership at login and verify its
+   exact resolved `write` access on every adapter operation, without retaining
+   the browser OAuth session in the adapter;
 3. make the PDS space authoritative while Stalwart becomes a rebuildable JMAP,
    IMAP, and SMTP projection;
 4. add fencing, retry spool, monitoring, revocation, deletion, and rollback;

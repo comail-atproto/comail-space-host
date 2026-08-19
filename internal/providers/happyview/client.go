@@ -27,6 +27,7 @@ const (
 	BlobIndexCollection    = "email.atmos.blobIndex"
 
 	createSpaceNSID  = "com.atproto.simplespace.createSpace"
+	listMembersNSID  = "com.atproto.simplespace.listMembers"
 	listSpacesNSID   = "com.atproto.space.listSpaces"
 	getSpaceNSID     = "com.atproto.space.getSpace"
 	applyWritesNSID  = "com.atproto.space.applyWrites"
@@ -45,19 +46,21 @@ type Doer interface {
 }
 
 type Config struct {
-	Origin      string
-	DID         string
-	Epoch       string
-	AllowHTTP   bool
-	AllowWrites bool
+	Origin            string
+	DID               string
+	Epoch             string
+	RequiredWriterDID string
+	AllowHTTP         bool
+	AllowWrites       bool
 }
 
 type Client struct {
-	origin      string
-	did         string
-	epoch       string
-	doer        Doer
-	allowWrites bool
+	origin            string
+	did               string
+	epoch             string
+	requiredWriterDID string
+	doer              Doer
+	allowWrites       bool
 }
 
 type ProviderError struct {
@@ -110,10 +113,19 @@ func New(cfg Config, doer Doer) (*Client, error) {
 	if _, err := syntax.ParseDID(cfg.DID); err != nil {
 		return nil, errors.New("happyview: exact account DID is required")
 	}
+	if cfg.RequiredWriterDID != "" {
+		writer, err := syntax.ParseDID(cfg.RequiredWriterDID)
+		if err != nil || writer.String() != cfg.RequiredWriterDID {
+			return nil, errors.New("happyview: exact required writer DID is invalid")
+		}
+	}
 	if cfg.Epoch != CertifiedEpoch {
 		return nil, fmt.Errorf("%w: HappyView epoch is not certified", repository.ErrUnsupported)
 	}
-	return &Client{origin: origin, did: cfg.DID, epoch: cfg.Epoch, doer: doer, allowWrites: cfg.AllowWrites}, nil
+	return &Client{
+		origin: origin, did: cfg.DID, epoch: cfg.Epoch, requiredWriterDID: cfg.RequiredWriterDID,
+		doer: doer, allowWrites: cfg.AllowWrites,
+	}, nil
 }
 
 func (c *Client) ProviderID() string { return "happyview@" + c.epoch }
@@ -193,14 +205,43 @@ func (c *Client) OpenMailbox(ctx context.Context, recipientDID, key string) (rep
 	if err := c.requireWrites(); err != nil {
 		return repository.Target{}, err
 	}
-	if recipientDID != c.did || !validKey(key) {
+	if recipientDID != c.did || !validKey(key) || c.requiredWriterDID == "" {
 		return repository.Target{}, repository.ErrTarget
 	}
 	target := repository.Target{ProviderOrigin: c.origin, SpaceURI: fmt.Sprintf("at://%s/space/%s/%s", c.did, mailbox.MailboxSpaceType, key), RepoDID: c.did, Epoch: c.epoch}
 	if err := c.verifyMailboxSpace(ctx, target); err != nil {
 		return repository.Target{}, err
 	}
+	if err := c.verifyRequiredWriter(ctx, target); err != nil {
+		return repository.Target{}, err
+	}
 	return target, nil
+}
+
+func (c *Client) verifyRequiredWriter(ctx context.Context, target repository.Target) error {
+	var out struct {
+		Members []struct {
+			DID    string `json:"did"`
+			Access string `json:"access"`
+		} `json:"members"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, listMembersNSID, url.Values{"space": {target.SpaceURI}}, nil, &out); err != nil {
+		return err
+	}
+	matches := 0
+	for _, member := range out.Members {
+		if member.DID != c.requiredWriterDID {
+			continue
+		}
+		matches++
+		if member.Access != "write" {
+			return repository.ErrUnauthorized
+		}
+	}
+	if matches != 1 {
+		return repository.ErrUnauthorized
+	}
+	return nil
 }
 
 func (c *Client) verifyMailboxSpace(ctx context.Context, target repository.Target) error {

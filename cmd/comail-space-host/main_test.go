@@ -108,24 +108,31 @@ func TestValidateConfigAcceptsCertifiedProviderWithoutStaticMailboxes(t *testing
 }
 
 type reusableHappyViewDoer struct {
-	status int
-	body   string
-	calls  int
+	status      int
+	body        string
+	membersBody string
+	calls       int
 }
 
 func (d *reusableHappyViewDoer) Do(_ context.Context, request *http.Request, endpoint string) (*http.Response, error) {
 	d.calls++
-	if endpoint != "com.atproto.space.getSpace" {
+	status := d.status
+	body := d.body
+	if endpoint == "com.atproto.simplespace.listMembers" {
+		status = http.StatusOK
+		body = d.membersBody
+	} else if endpoint != "com.atproto.space.getSpace" {
 		return nil, context.Canceled
 	}
 	return &http.Response{
-		StatusCode: d.status, Body: io.NopCloser(strings.NewReader(d.body)),
+		StatusCode: status, Body: io.NopCloser(strings.NewReader(body)),
 		Header: make(http.Header), Request: request,
 	}, nil
 }
 
 func TestHappyViewMailboxResolverPinsCertifiedTargetAndRechecksGrant(t *testing.T) {
 	const did = "did:plc:dynamicmailboxowner"
+	const serviceDID = "did:web:inbox.comail.at:mailbox-adapter"
 	certificate := strings.Repeat("a", 64)
 	spaceURI := "at://" + did + "/space/email.atmos.mailbox/default"
 	doer := &reusableHappyViewDoer{status: http.StatusOK, body: `{
@@ -135,8 +142,8 @@ func TestHappyViewMailboxResolverPinsCertifiedTargetAndRechecksGrant(t *testing.
 			"type":"email.atmos.mailbox","skey":"default","mint_policy":"member-list","app_access":{"type":"open"},
 			"config":{"membership_public":false,"records_public":false,"allowedCollections":["email.atmos.folder","email.atmos.message","email.atmos.messageState","email.atmos.blobChunk","email.atmos.blobManifest","email.atmos.blobIndex"]}
 		}
-	}`}
-	resolver, err := newHappyViewMailboxResolver("https://inbox.comail.at/spaces", "relay-token", certificate, doer)
+	}`, membersBody: `{"members":[{"did":"` + did + `","access":"write"},{"did":"` + serviceDID + `","access":"write"}]}`}
+	resolver, err := newHappyViewMailboxResolver("https://inbox.comail.at/spaces", serviceDID, "relay-token", certificate, doer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +153,7 @@ func TestHappyViewMailboxResolverPinsCertifiedTargetAndRechecksGrant(t *testing.
 		Epoch: happyview.CertifiedEpoch, AuthorityCertificateSHA256: certificate,
 	}
 	handler, err := resolver(t.Context(), target)
-	if err != nil || handler == nil || doer.calls != 1 {
+	if err != nil || handler == nil || doer.calls != 2 {
 		t.Fatalf("handler=%T calls=%d error=%v", handler, doer.calls, err)
 	}
 
@@ -159,18 +166,23 @@ func TestHappyViewMailboxResolverPinsCertifiedTargetAndRechecksGrant(t *testing.
 	request.Header.Set("Authorization", "Bearer relay-token")
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || doer.calls != 2 {
+	if response.Code != http.StatusOK || doer.calls != 4 {
 		t.Fatalf("status=%d calls=%d body=%s", response.Code, doer.calls, response.Body.String())
 	}
 
 	wrong := target
 	wrong.AuthorityCertificateSHA256 = strings.Repeat("b", 64)
-	if _, err := resolver(t.Context(), wrong); err == nil || doer.calls != 2 {
+	if _, err := resolver(t.Context(), wrong); err == nil || doer.calls != 4 {
 		t.Fatalf("certificate mismatch reached provider: calls=%d error=%v", doer.calls, err)
 	}
 	doer.status = http.StatusForbidden
-	if _, err := resolver(t.Context(), target); err == nil || doer.calls != 3 {
+	if _, err := resolver(t.Context(), target); err == nil || doer.calls != 5 {
 		t.Fatalf("revoked grant result: calls=%d error=%v", doer.calls, err)
+	}
+	doer.status = http.StatusOK
+	doer.membersBody = `{"members":[{"did":"` + did + `","access":"write"},{"did":"` + serviceDID + `","access":"read"}]}`
+	if _, err := resolver(t.Context(), target); err == nil || doer.calls != 7 {
+		t.Fatalf("downgraded grant result: calls=%d error=%v", doer.calls, err)
 	}
 }
 

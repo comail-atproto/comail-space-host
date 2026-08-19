@@ -148,7 +148,9 @@ The relay binding ledger supplies a credential-free
 `(DID, provider, epoch, origin, repo, space, certificate)` tuple. The adapter
 admits it only when provider, epoch, origin, and certificate equal the globally
 certified HappyView registration, the space URI is the exact mailbox space for
-the same DID, and the live provider response proves owner-only private policy
-under the service grant. Target mismatch is rejected before a provider call.
-Successful resolution is intentionally not cached, so grant revocation and
-space-policy drift take effect on the next operation.
+the same DID, and live provider responses prove both owner-only private policy
+and exactly one resolved `write` membership for the configured adapter service
+DID. Read-only, missing, duplicated, or revoked service membership fails before
+the adapter exposes mailbox capabilities. Target mismatch is rejected before a
+provider call. Successful resolution is intentionally not cached, so grant
+revocation, downgrade, and space-policy drift take effect on the next operation.

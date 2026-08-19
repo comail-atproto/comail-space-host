@@ -108,7 +108,9 @@ func run(ctx context.Context, path string) error {
 	if err != nil || digest != configured.AuthorityCertificateSHA256 {
 		return fmt.Errorf("verify provider authority certificate: %w", errors.Join(err, errors.New("configured digest mismatch")))
 	}
-	resolver, err := newHappyViewMailboxResolver(configured.ProviderOrigin, relayToken, digest, signer)
+	resolver, err := newHappyViewMailboxResolver(
+		configured.ProviderOrigin, configured.ServiceIssuerDID, relayToken, digest, signer,
+	)
 	if err != nil {
 		return err
 	}
@@ -210,9 +212,11 @@ func validateConfig(configured config) error {
 	return nil
 }
 
-func newHappyViewMailboxResolver(providerOrigin, relayToken, certificate string, doer happyview.Doer) (shadowagent.Resolver, error) {
+func newHappyViewMailboxResolver(providerOrigin, serviceDID, relayToken, certificate string, doer happyview.Doer) (shadowagent.Resolver, error) {
 	decoded, err := hex.DecodeString(certificate)
-	if err != nil || len(decoded) != sha256.Size || certificate != strings.ToLower(certificate) || relayToken == "" || doer == nil {
+	parsedServiceDID, serviceDIDErr := syntax.ParseDID(serviceDID)
+	if err != nil || len(decoded) != sha256.Size || certificate != strings.ToLower(certificate) ||
+		serviceDIDErr != nil || parsedServiceDID.String() != serviceDID || relayToken == "" || doer == nil {
 		return nil, errors.New("dynamic mailbox resolver requires an exact token and provider certificate")
 	}
 	expectedProviderID := "happyview@" + happyview.CertifiedEpoch
@@ -240,7 +244,8 @@ func newHappyViewMailboxResolver(providerOrigin, relayToken, certificate string,
 			return nil, repository.ErrTarget
 		}
 		repo, err := happyview.New(happyview.Config{
-			Origin: providerOrigin, DID: requested.RepoDID, Epoch: happyview.CertifiedEpoch, AllowWrites: true,
+			Origin: providerOrigin, DID: requested.RepoDID, Epoch: happyview.CertifiedEpoch,
+			RequiredWriterDID: serviceDID, AllowWrites: true,
 		}, doer)
 		if err != nil {
 			return nil, err
