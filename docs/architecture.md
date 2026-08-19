@@ -134,3 +134,21 @@ PDS. Its signed HttpOnly dashboard cookie is captured through a random one-use
 URL on a second exact IPv4 loopback port (cookies are host-scoped, not
 port-scoped), then stored create-only with mode 0600. Provider requests disable
 proxies and redirects and refuse any non-loopback destination.
+
+## Production service-grant boundary
+
+The production adapter does not retain the lab browser OAuth session. The
+space owner grants the published adapter `did:web` identity write membership
+in one exact private mailbox space. The adapter signs a provider-audience and
+XRPC-method-bound ES256 service JWT with a 60-second lifetime for each request.
+There is no refresh token: membership is the durable provider-owned grant, and
+removing or downgrading it makes the next target verification fail closed.
+
+The relay binding ledger supplies a credential-free
+`(DID, provider, epoch, origin, repo, space, certificate)` tuple. The adapter
+admits it only when provider, epoch, origin, and certificate equal the globally
+certified HappyView registration, the space URI is the exact mailbox space for
+the same DID, and the live provider response proves owner-only private policy
+under the service grant. Target mismatch is rejected before a provider call.
+Successful resolution is intentionally not cached, so grant revocation and
+space-policy drift take effect on the next operation.

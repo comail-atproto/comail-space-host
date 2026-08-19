@@ -82,6 +82,13 @@ func TestLoadEvidenceBindsOwnerOnlyReportToExactProviderEpoch(t *testing.T) {
 	if err != nil || len(digest) != 64 {
 		t.Fatalf("digest=%q err=%v", digest, err)
 	}
+	providerDigest, err := LoadProviderEvidence(evidence, repo.ProviderID(), target.Epoch)
+	if err != nil || providerDigest != digest {
+		t.Fatalf("provider digest=%q err=%v", providerDigest, err)
+	}
+	if _, err := LoadProviderEvidence(evidence, repo.ProviderID(), target.Epoch+"-drift"); err == nil {
+		t.Fatal("provider evidence was accepted for a different epoch")
+	}
 	operationalTarget, err := repo.EnsureMailbox(context.Background(), did, "default")
 	if err != nil {
 		t.Fatal(err)

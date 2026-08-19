@@ -23,27 +23,23 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/comail-atproto/comail-space-host/internal/authoritycert"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 	"github.com/comail-atproto/comail-space-host/internal/providers/happyview"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 	"github.com/comail-atproto/comail-space-host/internal/serviceauth"
 	"github.com/comail-atproto/comail-space-host/internal/shadowagent"
 )
 
-type mailboxConfig struct {
-	DID                        string `json:"did"`
-	SpaceKey                   string `json:"spaceKey"`
+type config struct {
+	Listen                     string `json:"listen"`
+	ProviderOrigin             string `json:"providerOrigin"`
+	ServiceIssuerDID           string `json:"serviceIssuerDid"`
+	ServiceAudience            string `json:"serviceAudience"`
+	ServiceKeyFile             string `json:"serviceKeyFile"`
+	RelayTokenFile             string `json:"relayTokenFile"`
 	AuthorityCertificateSHA256 string `json:"authorityCertificateSha256"`
 	EvidenceFile               string `json:"evidenceFile"`
-}
-
-type config struct {
-	Listen           string          `json:"listen"`
-	ProviderOrigin   string          `json:"providerOrigin"`
-	ServiceIssuerDID string          `json:"serviceIssuerDid"`
-	ServiceAudience  string          `json:"serviceAudience"`
-	ServiceKeyFile   string          `json:"serviceKeyFile"`
-	RelayTokenFile   string          `json:"relayTokenFile"`
-	Mailboxes        []mailboxConfig `json:"mailboxes"`
-	ShutdownSeconds  int             `json:"shutdownSeconds,omitempty"`
+	ShutdownSeconds            int    `json:"shutdownSeconds,omitempty"`
 }
 
 func main() {
@@ -96,7 +92,8 @@ func run(ctx context.Context, path string) error {
 		return fmt.Errorf("load service signing key: %w", err)
 	}
 	signer, err := serviceauth.New(serviceauth.Config{
-		IssuerDID: configured.ServiceIssuerDID, Audience: configured.ServiceAudience, Key: key,
+		IssuerDID: configured.ServiceIssuerDID, Audience: configured.ServiceAudience,
+		Origin: configured.ProviderOrigin, Key: key,
 	})
 	if err != nil {
 		return err
@@ -106,32 +103,16 @@ func run(ctx context.Context, path string) error {
 		return fmt.Errorf("load relay token: %w", err)
 	}
 
-	handlers := make([]*shadowagent.Handler, 0, len(configured.Mailboxes))
-	for _, mailboxConfig := range configured.Mailboxes {
-		repo, err := happyview.New(happyview.Config{
-			Origin: configured.ProviderOrigin, DID: mailboxConfig.DID, Epoch: happyview.CertifiedEpoch, AllowWrites: true,
-		}, signer)
-		if err != nil {
-			return fmt.Errorf("construct mailbox provider: %w", err)
-		}
-		target, err := repo.OpenMailbox(ctx, mailboxConfig.DID, mailboxConfig.SpaceKey)
-		if err != nil {
-			return fmt.Errorf("verify configured private mailbox: %w", err)
-		}
-		digest, err := authoritycert.LoadEvidence(mailboxConfig.EvidenceFile, repo.ProviderID(), target)
-		if err != nil || digest != mailboxConfig.AuthorityCertificateSHA256 {
-			return fmt.Errorf("verify mailbox authority certificate: %w", errors.Join(err, errors.New("configured digest mismatch")))
-		}
-		handler, err := shadowagent.NewHandler(shadowagent.Config{
-			Token: relayToken, DID: mailboxConfig.DID, Target: target, Repository: repo,
-			AuthorityCertificateSHA256: digest, SourceVersioningCertified: true,
-		})
-		if err != nil {
-			return err
-		}
-		handlers = append(handlers, handler)
+	providerID := "happyview@" + happyview.CertifiedEpoch
+	digest, err := authoritycert.LoadProviderEvidence(configured.EvidenceFile, providerID, happyview.CertifiedEpoch)
+	if err != nil || digest != configured.AuthorityCertificateSHA256 {
+		return fmt.Errorf("verify provider authority certificate: %w", errors.Join(err, errors.New("configured digest mismatch")))
 	}
-	mux, err := shadowagent.NewMultiplexer(handlers...)
+	resolver, err := newHappyViewMailboxResolver(configured.ProviderOrigin, relayToken, digest, signer)
+	if err != nil {
+		return err
+	}
+	mux, err := shadowagent.NewResolvingMultiplexer(relayToken, resolver)
 	if err != nil {
 		return err
 	}
@@ -159,7 +140,7 @@ func run(ctx context.Context, path string) error {
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
-	fmt.Printf("Comail space host ready: mailboxes=%d provider=%s\n", len(configured.Mailboxes), happyview.CertifiedEpoch)
+	fmt.Printf("Comail space host ready: provider=%s dynamic_targets=true\n", providerID)
 	select {
 	case err := <-serveErr:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -219,33 +200,63 @@ func validateConfig(configured config) error {
 	if !safeAbsoluteFile(configured.ServiceKeyFile) || !safeAbsoluteFile(configured.RelayTokenFile) || configured.ServiceKeyFile == configured.RelayTokenFile {
 		return errors.New("separate absolute service key and relay token files are required")
 	}
-	if len(configured.Mailboxes) == 0 || len(configured.Mailboxes) > 100 || configured.ShutdownSeconds < 1 || configured.ShutdownSeconds > 60 {
-		return errors.New("mailbox count or shutdown timeout is outside its safety bound")
+	decoded, err := hex.DecodeString(configured.AuthorityCertificateSHA256)
+	if err != nil || len(decoded) != sha256.Size || configured.AuthorityCertificateSHA256 != strings.ToLower(configured.AuthorityCertificateSHA256) || !safeAbsoluteFile(configured.EvidenceFile) {
+		return errors.New("provider requires a pinned certificate and absolute evidence path")
 	}
-	seenDID := make(map[string]struct{}, len(configured.Mailboxes))
-	seenSpace := make(map[string]struct{}, len(configured.Mailboxes))
-	for _, mailbox := range configured.Mailboxes {
-		if _, err := syntax.ParseDID(mailbox.DID); err != nil {
-			return errors.New("mailbox requires an exact DID")
-		}
-		if _, err := syntax.ParseRecordKey(mailbox.SpaceKey); err != nil {
-			return errors.New("mailbox requires an exact space key")
-		}
-		decoded, err := hex.DecodeString(mailbox.AuthorityCertificateSHA256)
-		if err != nil || len(decoded) != sha256.Size || mailbox.AuthorityCertificateSHA256 != strings.ToLower(mailbox.AuthorityCertificateSHA256) || !safeAbsoluteFile(mailbox.EvidenceFile) {
-			return errors.New("mailbox requires a pinned certificate and absolute evidence path")
-		}
-		space := mailbox.DID + "\x00" + mailbox.SpaceKey
-		if _, duplicate := seenDID[mailbox.DID]; duplicate {
-			return errors.New("duplicate mailbox DID")
-		}
-		if _, duplicate := seenSpace[space]; duplicate {
-			return errors.New("duplicate mailbox space")
-		}
-		seenDID[mailbox.DID] = struct{}{}
-		seenSpace[space] = struct{}{}
+	if configured.ShutdownSeconds < 1 || configured.ShutdownSeconds > 60 {
+		return errors.New("shutdown timeout is outside its safety bound")
 	}
 	return nil
+}
+
+func newHappyViewMailboxResolver(providerOrigin, relayToken, certificate string, doer happyview.Doer) (shadowagent.Resolver, error) {
+	decoded, err := hex.DecodeString(certificate)
+	if err != nil || len(decoded) != sha256.Size || certificate != strings.ToLower(certificate) || relayToken == "" || doer == nil {
+		return nil, errors.New("dynamic mailbox resolver requires an exact token and provider certificate")
+	}
+	expectedProviderID := "happyview@" + happyview.CertifiedEpoch
+	return func(ctx context.Context, requested shadowagent.RouteTarget) (*shadowagent.Handler, error) {
+		if requested.ProviderID != expectedProviderID || requested.Origin != providerOrigin ||
+			requested.Epoch != happyview.CertifiedEpoch || requested.AuthorityCertificateSHA256 != certificate {
+			return nil, repository.ErrTarget
+		}
+		if _, err := syntax.ParseDID(requested.RepoDID); err != nil {
+			return nil, repository.ErrTarget
+		}
+		prefix := "at://" + requested.RepoDID + "/space/" + mailbox.MailboxSpaceType + "/"
+		spaceKey := strings.TrimPrefix(requested.SpaceURI, prefix)
+		if spaceKey == requested.SpaceURI {
+			return nil, repository.ErrTarget
+		}
+		if _, err := syntax.ParseRecordKey(spaceKey); err != nil {
+			return nil, repository.ErrTarget
+		}
+		exactTarget := repository.Target{
+			ProviderOrigin: requested.Origin, SpaceURI: requested.SpaceURI,
+			RepoDID: requested.RepoDID, Epoch: requested.Epoch,
+		}
+		if exactTarget.ValidateFor(requested.RepoDID) != nil {
+			return nil, repository.ErrTarget
+		}
+		repo, err := happyview.New(happyview.Config{
+			Origin: providerOrigin, DID: requested.RepoDID, Epoch: happyview.CertifiedEpoch, AllowWrites: true,
+		}, doer)
+		if err != nil {
+			return nil, err
+		}
+		opened, err := repo.OpenMailbox(ctx, requested.RepoDID, spaceKey)
+		if err != nil {
+			return nil, err
+		}
+		if opened != exactTarget {
+			return nil, repository.ErrTarget
+		}
+		return shadowagent.NewHandler(shadowagent.Config{
+			Token: relayToken, DID: requested.RepoDID, Target: opened, Repository: repo,
+			AuthorityCertificateSHA256: certificate, SourceVersioningCertified: true,
+		})
+	}, nil
 }
 
 func safeAbsoluteFile(path string) bool {

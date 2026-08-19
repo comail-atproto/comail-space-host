@@ -17,14 +17,16 @@ provider such as HappyView:
 Comail relay -- separate bearer --> comail-space-host
                                       |
                                       +-- 60-second ES256 service-auth JWT
-                                      +-- exact configured DID + private space
+                                      +-- exact certified DID + private space
                                       +-- HappyView permissioned records
 ```
 
 - The adapter never stores browser cookies or user OAuth tokens.
 - Its public `did:web` document contains only the service signing public key.
 - The adapter service DID must be granted write membership in each user-owned
-  mailbox space. Request input can select only a preconfigured target.
+  mailbox space. Every request target must match the configured provider,
+  exact certified epoch, origin, and certificate; the adapter re-verifies the
+  private owner space and service grant before dispatching it.
 - HappyView, the adapter, and their SQLite state run separately from the relay.
 - Permissioned data is access-controlled plaintext, not end-to-end encryption.
 - Contacts, calendars, files, filters, vacation replies, and native-client
@@ -45,21 +47,18 @@ the deployment layer.
   "serviceAudience": "did:web:inbox.comail.at#mailbox",
   "serviceKeyFile": "/run/credentials/comail-space-host/service-key.pem",
   "relayTokenFile": "/run/credentials/comail-space-host/relay-token",
-  "mailboxes": [
-    {
-      "did": "did:plc:example",
-      "spaceKey": "default",
-      "authorityCertificateSha256": "<64 lowercase hex>",
-      "evidenceFile": "/run/credentials/comail-space-host/example-evidence.json"
-    }
-  ]
+  "authorityCertificateSha256": "<64 lowercase hex>",
+  "evidenceFile": "/run/credentials/comail-space-host/provider-evidence.json"
 }
 ```
 
-Each evidence file is the fully passing, owner-only authority certification
-for the exact pinned HappyView epoch. Startup verifies the private space,
-membership, collection allowlist, certificate digest, and every configured
-target before opening the listener.
+The evidence file is the fully passing, owner-only authority certification for
+the exact pinned HappyView epoch. Startup verifies its certificate digest.
+The relay supplies only credential-free exact targets from its binding ledger;
+the adapter rejects provider/certificate drift before a network call and uses
+a fresh 60-second service-auth JWT to verify the private owner space and write
+membership on every request. Removing that membership therefore revokes data
+access without an adapter restart or a stored refresh token.
 
 ## Development
 

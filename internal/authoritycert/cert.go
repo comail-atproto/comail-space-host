@@ -68,7 +68,19 @@ type Report struct {
 // agent protocol and Comail admission configuration. The evidence digest is
 // what the Comail side pins during authority admission.
 func LoadEvidence(path, providerID string, target repository.Target) (string, error) {
-	if !filepath.IsAbs(path) || path == string(filepath.Separator) || providerID == "" {
+	if target.ValidateFor(target.RepoDID) != nil {
+		return "", errors.New("authority certification: exact target is required")
+	}
+	return LoadProviderEvidence(path, providerID, target.Epoch)
+}
+
+// LoadProviderEvidence verifies a provider-wide authority certificate for an
+// exact implementation epoch. The destructive proof runs in a disposable
+// space, so operational mailbox targets bind this same evidence digest
+// independently when they are admitted.
+func LoadProviderEvidence(path, providerID, epoch string) (string, error) {
+	if !filepath.IsAbs(path) || path == string(filepath.Separator) || providerID == "" || epoch == "" ||
+		strings.ContainsAny(providerID+epoch, " \t\r\n\x00") {
 		return "", errors.New("authority certification: exact evidence path and provider are required")
 	}
 	info, err := os.Lstat(path)
@@ -107,8 +119,8 @@ func LoadEvidence(path, providerID string, target repository.Target) (string, er
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return "", errors.New("authority certification: trailing evidence data")
 	}
-	if target.ValidateFor(target.RepoDID) != nil || report.Version != 2 || !report.Passed || !allChecks(report.Checks) ||
-		report.ProviderID != providerID || report.ProviderEpoch != target.Epoch || report.TargetSHA256 == "" ||
+	if report.Version != 2 || !report.Passed || !allChecks(report.Checks) ||
+		report.ProviderID != providerID || report.ProviderEpoch != epoch || report.TargetSHA256 == "" ||
 		!report.Capabilities.AtomicApplyWrites || !report.Capabilities.CompareAndSwap || !report.Capabilities.ReferencedBlobs {
 		return "", errors.New("authority certification: evidence does not bind the exact certified provider epoch")
 	}
