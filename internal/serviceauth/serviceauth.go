@@ -256,7 +256,7 @@ func privateKeyFileSafe(path string, info os.FileInfo) bool {
 	}
 	cleanDirectory := filepath.Clean(credentialDirectory)
 	directoryInfo, err := os.Lstat(cleanDirectory)
-	if err != nil || !directoryInfo.IsDir() || directoryInfo.Mode().Perm()&0o077 != 0 {
+	if err != nil || !directoryInfo.IsDir() {
 		return false
 	}
 	cleanPath := filepath.Clean(path)
