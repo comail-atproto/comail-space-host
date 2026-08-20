@@ -26,6 +26,7 @@ import (
 	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 	"github.com/comail-atproto/comail-space-host/internal/providers/happyview"
 	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/securefile"
 	"github.com/comail-atproto/comail-space-host/internal/serviceauth"
 	"github.com/comail-atproto/comail-space-host/internal/shadowagent"
 )
@@ -269,35 +270,12 @@ func safeAbsoluteFile(path string) bool {
 }
 
 func readOwnerSecret(path string) (string, error) {
-	if !safeAbsoluteFile(path) {
-		return "", errors.New("secret path must be absolute")
-	}
-	info, err := os.Lstat(path)
+	data, err := securefile.Read(path, 16*1024)
 	if err != nil {
 		return "", err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o177 != 0 {
-		return "", errors.New("secret must be an owner-only regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	opened, statErr := file.Stat()
-	if statErr != nil || !opened.Mode().IsRegular() || opened.Mode().Perm()&0o177 != 0 || !os.SameFile(info, opened) {
-		_ = file.Close()
-		return "", errors.New("secret changed or became unsafe while opening")
-	}
-	data, readErr := io.ReadAll(io.LimitReader(file, 16*1024+1))
-	closeErr := file.Close()
-	if readErr != nil {
-		return "", readErr
-	}
-	if closeErr != nil {
-		return "", closeErr
 	}
 	value := strings.TrimSpace(string(data))
-	if len(data) > 16*1024 || value == "" || strings.ContainsAny(value, "\r\n\x00") {
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") {
 		return "", errors.New("secret is empty, too large, or malformed")
 	}
 	return value, nil

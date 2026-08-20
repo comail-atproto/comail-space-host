@@ -107,6 +107,27 @@ func TestValidateConfigAcceptsCertifiedProviderWithoutStaticMailboxes(t *testing
 	}
 }
 
+func TestReadOwnerSecretAcceptsOnlyExactSystemdCredentialShape(t *testing.T) {
+	credentialDirectory := filepath.Join(t.TempDir(), "service-visible")
+	if err := os.Mkdir(credentialDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(credentialDirectory, "relay-token")
+	if err := os.WriteFile(tokenPath, []byte("relay-token-secret\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CREDENTIALS_DIRECTORY", credentialDirectory)
+	if token, err := readOwnerSecret(tokenPath); err != nil || token != "relay-token-secret" {
+		t.Fatalf("read systemd relay token: token=%q err=%v", token, err)
+	}
+
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	if _, err := readOwnerSecret(tokenPath); err == nil {
+		t.Fatal("accepted group-readable relay token outside CREDENTIALS_DIRECTORY")
+	}
+}
+
 type reusableHappyViewDoer struct {
 	status      int
 	body        string

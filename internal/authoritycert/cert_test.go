@@ -99,6 +99,13 @@ func TestLoadEvidenceBindsOwnerOnlyReportToExactProviderEpoch(t *testing.T) {
 	if _, err := LoadEvidence(evidence, repo.ProviderID()+"-other", target); err == nil {
 		t.Fatal("evidence was accepted for a different provider")
 	}
+	if err := os.Chmod(evidence, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CREDENTIALS_DIRECTORY", filepath.Dir(evidence))
+	if _, err := LoadEvidence(evidence, repo.ProviderID(), target); err != nil {
+		t.Fatalf("systemd credential evidence was rejected: %v", err)
+	}
 	if err := os.Chmod(evidence, 0o644); err != nil {
 		t.Fatal(err)
 	}
