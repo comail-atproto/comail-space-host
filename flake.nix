@@ -37,6 +37,7 @@
             pname = "happyview";
             version = "2.13.0";
             src = happyview-src;
+            patches = [ ./patches/happyview-service-auth-private-spaces.patch ];
             cargoHash = "sha256-AzabZcY7zu3qXI5RLJvE20d3ZVPqgD9cwwq0W6WFil8=";
             nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = [ pkgs.openssl ];
