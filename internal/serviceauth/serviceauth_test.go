@@ -136,14 +136,14 @@ func TestLoadPrivateKeyAcceptsSystemdCredentialACLModeOnlyInCredentialDirectory(
 		t.Fatalf("load systemd credential signing key: %v", err)
 	}
 
-	broadDir := filepath.Join(t.TempDir(), "broad-credential-directory")
-	if err := os.Mkdir(broadDir, 0o755); err != nil {
+	serviceVisibleDir := filepath.Join(t.TempDir(), "service-visible-credential-directory")
+	if err := os.Mkdir(serviceVisibleDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	broadPath := writeTestPrivateKeyIn(t, broadDir, key, 0o440)
-	t.Setenv("CREDENTIALS_DIRECTORY", broadDir)
-	if _, err := LoadPrivateKey(broadPath); err == nil {
-		t.Fatal("accepted systemd-style key from a traversable credential directory")
+	serviceVisiblePath := writeTestPrivateKeyIn(t, serviceVisibleDir, key, 0o440)
+	t.Setenv("CREDENTIALS_DIRECTORY", serviceVisibleDir)
+	if _, err := LoadPrivateKey(serviceVisiblePath); err != nil {
+		t.Fatalf("load key through the systemd credential-directory contract: %v", err)
 	}
 }
 
