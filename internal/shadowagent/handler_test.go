@@ -349,6 +349,77 @@ func TestHandlerCaptureAcceptsEveryPortableMailbox(t *testing.T) {
 	}
 }
 
+func TestHandlerInventoryNormalizesExistingStandardFolderNamesToRoles(t *testing.T) {
+	backend := memory.NewBackend()
+	repo := backend.OwnerSession(agentTestDID)
+	target, err := repo.EnsureMailbox(t.Context(), agentTestDID, "legacy-folder-names")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := strings.Repeat("a", 64)
+	handler, err := NewHandler(Config{
+		Token: "test-token", DID: agentTestDID, Target: target, Repository: repo,
+		AuthorityCertificateSHA256: certificate, SourceVersioningCertified: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := []struct {
+		name string
+		role string
+	}{
+		{name: "Inbox", role: "inbox"},
+		{name: "Junk", role: "junk"},
+		{name: "Trash", role: "trash"},
+		{name: "Archive", role: "archive"},
+		{name: "Drafts", role: "drafts"},
+		{name: "Sent", role: "sent"},
+	}
+	for index, folder := range roles {
+		raw := []byte(fmt.Sprintf("Message-ID: <legacy-role-%d@test>\r\nSubject: legacy role\r\n\r\nbody", index))
+		imported := mailbox.ImportedMessage{
+			RecipientDID: agentTestDID, SourceKey: fmt.Sprintf("jmap:account:legacy-role-%d", index),
+			Raw: raw, Mailbox: folder.name,
+		}
+		blob, err := repo.UploadBlob(t.Context(), target, raw, mailbox.MessageMIMEType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pair, err := mailbox.NewMessagePair(imported, blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		folderRecord := mailbox.NewFolder(folder.name, folder.role, mailbox.StableUIDValidity(agentTestDID, folder.name))
+		if _, err := repo.ApplyWrites(t.Context(), target, []repository.Write{
+			{Action: repository.Create, Collection: mailbox.FolderCollection, RKey: folderRecord.RKey, Value: folderRecord.Record},
+			{Action: repository.Create, Collection: mailbox.MessageCollection, RKey: pair.RKey, Value: pair.Message},
+			{Action: repository.Create, Collection: mailbox.MessageStateCollection, RKey: pair.RKey, Value: pair.State},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inventory := performAgentRequest(t, handler, "/v2/inventory", inventoryRequest{
+		Version: AuthorityProtocolVersion, Target: targetView(repo.ProviderID(), target, certificate), Limit: 100,
+	})
+	var listed inventoryResponse
+	if err := json.Unmarshal(inventory.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Code != http.StatusOK || len(listed.Messages) != len(roles) {
+		t.Fatalf("inventory status=%d body=%s", inventory.Code, inventory.Body.String())
+	}
+	got := make(map[string]bool, len(listed.Messages))
+	for _, message := range listed.Messages {
+		got[message.Mailbox] = true
+	}
+	for _, folder := range roles {
+		if !got[folder.role] {
+			t.Errorf("legacy folder %q was not normalized to role %q", folder.name, folder.role)
+		}
+	}
+}
+
 func TestHandlerRejectsMissingTokenAndConfusedTarget(t *testing.T) {
 	backend := memory.NewBackend()
 	repo := backend.OwnerSession(agentTestDID)
