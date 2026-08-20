@@ -731,7 +731,11 @@ func (h *Handler) inventoryMessages(ctx context.Context) ([]messageSnapshot, err
 		if json.Unmarshal(stored.Value, &folder) != nil || folder.Type != mailbox.FolderCollection || folder.Name == "" || stored.RKey != mailbox.FolderRKey(folder.Name) {
 			return nil, mailbox.ErrIntegrity
 		}
-		folders[stored.RKey] = folder.Name
+		portableName, ok := portableFolderName(folder)
+		if !ok {
+			return nil, mailbox.ErrIntegrity
+		}
+		folders[stored.RKey] = portableName
 	}
 	states, err := h.repo.ListRecords(ctx, h.target, mailbox.MessageStateCollection)
 	if err != nil {
@@ -771,6 +775,17 @@ func (h *Handler) inventoryMessages(ctx context.Context) ([]messageSnapshot, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RKey < out[j].RKey })
 	return out, nil
+}
+
+func portableFolderName(folder mailbox.FolderRecord) (string, bool) {
+	switch folder.Role {
+	case "inbox", "junk", "sent", "drafts", "trash", "archive":
+		return folder.Role, true
+	case "":
+		return folder.Name, validPortableMailbox(folder.Name)
+	default:
+		return "", false
+	}
 }
 
 func (h *Handler) state(response http.ResponseWriter, request *http.Request) {
