@@ -378,7 +378,7 @@ func (c *Client) PutRecordCAS(ctx context.Context, target repository.Target, col
 	if err != nil {
 		return repository.Record{}, err
 	}
-	if out.URI != recordURI(target, collection, rkey) || out.CID == "" {
+	if out.URI != c.recordURI(target, collection, rkey) || out.CID == "" {
 		return repository.Record{}, fmt.Errorf("%w: putRecord result target mismatch", repository.ErrTarget)
 	}
 	encoded, err := json.Marshal(value)
@@ -404,7 +404,7 @@ func (c *Client) GetRecord(ctx context.Context, target repository.Target, collec
 	if err != nil {
 		return repository.Record{}, err
 	}
-	if out.URI != recordURI(target, collection, rkey) || out.CID == "" || len(out.Value) == 0 {
+	if out.URI != c.recordURI(target, collection, rkey) || out.CID == "" || len(out.Value) == 0 {
 		return repository.Record{}, fmt.Errorf("%w: getRecord result target mismatch", repository.ErrTarget)
 	}
 	return repository.Record{URI: out.URI, Collection: collection, RKey: rkey, CID: out.CID, Value: out.Value}, nil
@@ -417,7 +417,7 @@ func (c *Client) ListRecords(ctx context.Context, target repository.Target, coll
 	if collection != "" && !validCollection(collection) {
 		return nil, mailbox.ErrInvalidRecord
 	}
-	params := url.Values{"space": {target.SpaceURI}, "repo": {target.RepoDID}, "limit": {"100"}}
+	params := url.Values{"space": {target.SpaceURI}, "repo": {c.recordDID()}, "limit": {"100"}}
 	if collection != "" {
 		params.Set("collection", collection)
 	}
@@ -590,7 +590,7 @@ func (c *Client) applyRaw(ctx context.Context, target repository.Target, writes 
 	}
 	results := make([]repository.WriteResult, len(writes))
 	for i, result := range out.Results {
-		if writes[i].Action != repository.Delete && (result.URI != recordURI(target, writes[i].Collection, writes[i].RKey) || result.CID == "") {
+		if writes[i].Action != repository.Delete && (result.URI != c.recordURI(target, writes[i].Collection, writes[i].RKey) || result.CID == "") {
 			return nil, fmt.Errorf("%w: applyWrites result target mismatch", repository.ErrTarget)
 		}
 		results[i] = repository.WriteResult{URI: result.URI, CID: result.CID}
@@ -757,8 +757,18 @@ func jsonEqual(a, b []byte) bool {
 	return json.Unmarshal(a, &av) == nil && json.Unmarshal(b, &bv) == nil && reflect.DeepEqual(av, bv)
 }
 
-func recordURI(target repository.Target, collection, rkey string) string {
-	return target.SpaceURI + "/" + target.RepoDID + "/" + collection + "/" + rkey
+func (c *Client) recordDID() string {
+	// HappyView records the authenticated writer in each record URI. A
+	// production service-auth client is the explicitly verified write member,
+	// while the member DID remains the immutable owner of the containing space.
+	if c.requiredWriterDID != "" {
+		return c.requiredWriterDID
+	}
+	return c.did
+}
+
+func (c *Client) recordURI(target repository.Target, collection, rkey string) string {
+	return target.SpaceURI + "/" + c.recordDID() + "/" + collection + "/" + rkey
 }
 
 func parseSpaceURI(raw string) (authority, spaceType, key string, ok bool) {

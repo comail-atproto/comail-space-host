@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -147,17 +148,17 @@ func TestPrivateChunkedBlobRoundTrip(t *testing.T) {
 
 	doer := &scriptedDoer{responses: []scriptedResponse{
 		{404, `{"error":"Record not found"}`},
-		{200, `{"results":[{"uri":"` + recordURI(testTarget(), BlobChunkCollection, chunkRKey) + `","cid":"chunk-cid"}]}`},
+		{200, `{"results":[{"uri":"` + recordURIForDID(testTarget(), testWriterDID, BlobChunkCollection, chunkRKey) + `","cid":"chunk-cid"}]}`},
 		{200, `{"rev":"r1","commit":{"hash":"h1"}}`},
 		{404, `{"error":"Record not found"}`},
-		{200, `{"results":[{"uri":"` + recordURI(testTarget(), BlobManifestCollection, manifestRKey) + `","cid":"` + manifestCID + `"}]}`},
+		{200, `{"results":[{"uri":"` + recordURIForDID(testTarget(), testWriterDID, BlobManifestCollection, manifestRKey) + `","cid":"` + manifestCID + `"}]}`},
 		{200, `{"rev":"r2","commit":{"hash":"h2"}}`},
 		{404, `{"error":"Record not found"}`},
-		{200, `{"results":[{"uri":"` + recordURI(testTarget(), BlobIndexCollection, indexRKey) + `","cid":"index-cid"}]}`},
+		{200, `{"results":[{"uri":"` + recordURIForDID(testTarget(), testWriterDID, BlobIndexCollection, indexRKey) + `","cid":"index-cid"}]}`},
 		{200, `{"rev":"r3","commit":{"hash":"h3"}}`},
-		{200, fmt.Sprintf(`{"uri":%q,"cid":"index-cid","value":{"$type":%q,"manifestRKey":%q,"manifestCid":%q}}`, recordURI(testTarget(), BlobIndexCollection, indexRKey), BlobIndexCollection, manifestRKey, manifestCID)},
-		{200, fmt.Sprintf(`{"uri":%q,"cid":%q,"value":{"$type":%q,"sha256":%q,"size":%d,"mimeType":%q,"chunks":[{"rkey":%q,"sha256":%q,"size":%d}]}}`, recordURI(testTarget(), BlobManifestCollection, manifestRKey), manifestCID, BlobManifestCollection, mailbox.RawSHA256(raw), len(raw), mailbox.MessageMIMEType, chunkRKey, mailbox.RawSHA256(raw), len(raw))},
-		{200, fmt.Sprintf(`{"uri":%q,"cid":"chunk-cid","value":{"$type":%q,"sha256":%q,"size":%d,"dataBase64":%q}}`, recordURI(testTarget(), BlobChunkCollection, chunkRKey), BlobChunkCollection, mailbox.RawSHA256(raw), len(raw), encodeBase64(raw))},
+		{200, fmt.Sprintf(`{"uri":%q,"cid":"index-cid","value":{"$type":%q,"manifestRKey":%q,"manifestCid":%q}}`, recordURIForDID(testTarget(), testWriterDID, BlobIndexCollection, indexRKey), BlobIndexCollection, manifestRKey, manifestCID)},
+		{200, fmt.Sprintf(`{"uri":%q,"cid":%q,"value":{"$type":%q,"sha256":%q,"size":%d,"mimeType":%q,"chunks":[{"rkey":%q,"sha256":%q,"size":%d}]}}`, recordURIForDID(testTarget(), testWriterDID, BlobManifestCollection, manifestRKey), manifestCID, BlobManifestCollection, mailbox.RawSHA256(raw), len(raw), mailbox.MessageMIMEType, chunkRKey, mailbox.RawSHA256(raw), len(raw))},
+		{200, fmt.Sprintf(`{"uri":%q,"cid":"chunk-cid","value":{"$type":%q,"sha256":%q,"size":%d,"dataBase64":%q}}`, recordURIForDID(testTarget(), testWriterDID, BlobChunkCollection, chunkRKey), BlobChunkCollection, mailbox.RawSHA256(raw), len(raw), encodeBase64(raw))},
 	}}
 	client := testClient(t, doer)
 	blob, err := client.UploadBlob(context.Background(), testTarget(), raw, mailbox.MessageMIMEType)
@@ -178,7 +179,7 @@ func TestPrivateChunkedBlobRoundTrip(t *testing.T) {
 
 func TestApplyWritesUsesAtomicBatchAndReadsCommit(t *testing.T) {
 	doer := &scriptedDoer{responses: []scriptedResponse{
-		{200, `{"results":[{"uri":"` + recordURI(testTarget(), mailbox.MessageCollection, "rk") + `","cid":"c1"},{"uri":"` + recordURI(testTarget(), mailbox.MessageStateCollection, "rk") + `","cid":"c2"}]}`},
+		{200, `{"results":[{"uri":"` + recordURIForDID(testTarget(), testWriterDID, mailbox.MessageCollection, "rk") + `","cid":"c1"},{"uri":"` + recordURIForDID(testTarget(), testWriterDID, mailbox.MessageStateCollection, "rk") + `","cid":"c2"}]}`},
 		{200, `{"rev":"r4","commit":{"hash":"h4"}}`},
 	}}
 	client := testClient(t, doer)
@@ -192,6 +193,25 @@ func TestApplyWritesUsesAtomicBatchAndReadsCommit(t *testing.T) {
 	if commit.Rev != "r4" || commit.Hash != "h4" || len(commit.Results) != 2 {
 		t.Fatalf("commit = %#v", commit)
 	}
+}
+
+func TestListRecordsScopesDelegatedReadsToServiceWriter(t *testing.T) {
+	doer := &scriptedDoer{responses: []scriptedResponse{{200, `{"records":[]}`}}}
+	client := testClient(t, doer)
+	if _, err := client.ListRecords(t.Context(), testTarget(), mailbox.MessageCollection); err != nil {
+		t.Fatal(err)
+	}
+	if len(doer.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(doer.requests))
+	}
+	requestURL := doer.requests[0].URL
+	if !strings.Contains(requestURL, "repo="+url.QueryEscape(testWriterDID)) {
+		t.Fatalf("delegated list URL does not use service writer: %s", requestURL)
+	}
+}
+
+func recordURIForDID(target repository.Target, did, collection, rkey string) string {
+	return target.SpaceURI + "/" + did + "/" + collection + "/" + rkey
 }
 
 func TestTargetMismatchNeverReachesNetwork(t *testing.T) {
