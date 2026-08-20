@@ -605,7 +605,7 @@ func (c *Client) latestCommit(ctx context.Context, target repository.Target) (st
 			Hash string `json:"hash"`
 		} `json:"commit"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, latestCommitNSID, url.Values{"space": {target.SpaceURI}, "did": {target.RepoDID}}, nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, latestCommitNSID, url.Values{"space": {target.SpaceURI}, "did": {c.recordDID()}}, nil, &out); err != nil {
 		return "", "", err
 	}
 	if out.Rev == "" || out.Commit == nil || out.Commit.Hash == "" {
