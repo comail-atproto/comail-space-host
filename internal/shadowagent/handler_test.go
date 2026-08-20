@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -250,7 +251,7 @@ func TestHandlerCapturesAndAtomicallyVersionsEditedDraft(t *testing.T) {
 			if err := json.Unmarshal(moved.Body.Bytes(), &movedList); err != nil {
 				t.Fatal(err)
 			}
-			if len(movedList.Messages) != 1 || movedList.Messages[0].Mailbox != "Sent" ||
+			if len(movedList.Messages) != 1 || movedList.Messages[0].Mailbox != "sent" ||
 				len(movedList.Messages[0].Keywords) != 1 || movedList.Messages[0].Keywords[0] != "$seen" {
 				t.Fatalf("same-byte state move was not captured: %s", moved.Body.String())
 			}
@@ -278,13 +279,73 @@ func TestHandlerCapturesAndAtomicallyVersionsEditedDraft(t *testing.T) {
 			}
 		} else {
 			live++
-			if string(message.Raw) != string(secondRaw) || message.Mailbox != "Sent" || len(message.Keywords) != 1 || message.Keywords[0] != "$seen" {
+			if string(message.Raw) != string(secondRaw) || message.Mailbox != "sent" || len(message.Keywords) != 1 || message.Keywords[0] != "$seen" {
 				t.Fatalf("live raw=%q", message.Raw)
 			}
 		}
 	}
 	if live != 1 || tombstoned != 1 {
 		t.Fatalf("live=%d tombstoned=%d messages=%#v", live, tombstoned, listed.Messages)
+	}
+}
+
+func TestHandlerCaptureAcceptsEveryPortableMailbox(t *testing.T) {
+	backend := memory.NewBackend()
+	repo := backend.OwnerSession(agentTestDID)
+	target, err := repo.EnsureMailbox(t.Context(), agentTestDID, "capture-mailboxes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate := strings.Repeat("a", 64)
+	handler, err := NewHandler(Config{
+		Token: "test-token", DID: agentTestDID, Target: target, Repository: repo,
+		AuthorityCertificateSHA256: certificate, SourceVersioningCertified: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireTarget := targetView(repo.ProviderID(), target, certificate)
+	mailboxes := []string{"inbox", "junk", "trash", "archive", "drafts", "sent", "Custom Folder"}
+	for index, mailboxName := range mailboxes {
+		raw := []byte(fmt.Sprintf("Message-ID: <portable-%d@test>\r\nSubject: portable\r\n\r\nbody", index))
+		response := performAgentRequest(t, handler, "/v2/capture", captureRequest{
+			Version: AuthorityProtocolVersion, Target: wireTarget, RecipientDID: agentTestDID,
+			Mailbox: mailboxName, SourceKey: fmt.Sprintf("jmap:account:portable-%d", index),
+			Message: protocolMessage{Raw: raw},
+		})
+		if response.Code != http.StatusOK {
+			t.Fatalf("capture mailbox %q status=%d body=%s", mailboxName, response.Code, response.Body.String())
+		}
+	}
+
+	inventory := performAgentRequest(t, handler, "/v2/inventory", inventoryRequest{
+		Version: AuthorityProtocolVersion, Target: wireTarget, Limit: 100,
+	})
+	var listed inventoryResponse
+	if err := json.Unmarshal(inventory.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if inventory.Code != http.StatusOK || len(listed.Messages) != len(mailboxes) {
+		t.Fatalf("inventory status=%d body=%s", inventory.Code, inventory.Body.String())
+	}
+	got := make(map[string]bool, len(listed.Messages))
+	for _, message := range listed.Messages {
+		got[message.Mailbox] = true
+	}
+	for _, mailboxName := range mailboxes {
+		if !got[mailboxName] {
+			t.Errorf("portable mailbox %q was not preserved", mailboxName)
+		}
+	}
+	for _, mailboxName := range []string{"", "   ", "bad\rname", strings.Repeat("x", 256)} {
+		response := performAgentRequest(t, handler, "/v2/capture", captureRequest{
+			Version: AuthorityProtocolVersion, Target: wireTarget, RecipientDID: agentTestDID,
+			Mailbox: mailboxName, SourceKey: "jmap:account:invalid",
+			Message: protocolMessage{Raw: []byte("Subject: invalid\r\n\r\nbody")},
+		})
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("invalid mailbox %q status=%d", mailboxName, response.Code)
+		}
 	}
 }
 

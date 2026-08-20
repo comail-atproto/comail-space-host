@@ -269,8 +269,7 @@ func (h *Handler) capture(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, `{"error":"InvalidRequest"}`, http.StatusBadRequest)
 		return
 	}
-	input.Mailbox = canonicalCaptureMailbox(input.Mailbox)
-	if input.Mailbox == "" || !validKeywords(input.Keywords) {
+	if !validPortableMailbox(input.Mailbox) || !validKeywords(input.Keywords) {
 		http.Error(response, `{"error":"InvalidRequest"}`, http.StatusBadRequest)
 		return
 	}
@@ -603,15 +602,8 @@ func canonicalMailbox(value string) string {
 	}
 }
 
-func canonicalCaptureMailbox(value string) string {
-	switch {
-	case strings.EqualFold(value, "draft"), strings.EqualFold(value, "drafts"):
-		return "Drafts"
-	case strings.EqualFold(value, "sent"):
-		return "Sent"
-	default:
-		return ""
-	}
+func validPortableMailbox(value string) bool {
+	return strings.TrimSpace(value) != "" && len(value) <= 255 && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func validKeywords(keywords []string) bool {
@@ -639,8 +631,7 @@ func validSHA256(value string) bool {
 }
 
 func (h *Handler) ensureFolder(ctx context.Context, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 255 || strings.ContainsAny(name, "\r\n\x00") {
+	if !validPortableMailbox(name) {
 		return mailbox.ErrInvalidRecord
 	}
 	rkey := mailbox.FolderRKey(name)
