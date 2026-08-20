@@ -9,16 +9,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/comail-atproto/comail-space-host/internal/securefile"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mr-tron/base58"
 )
@@ -193,35 +191,9 @@ func (s *Signer) DIDDocument() Document {
 }
 
 func LoadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	if !filepath.IsAbs(path) || path == string(filepath.Separator) {
-		return nil, errors.New("serviceauth: signing key path must be absolute")
-	}
-	info, err := os.Lstat(path)
+	data, err := securefile.Read(path, 16*1024)
 	if err != nil {
-		return nil, err
-	}
-	if !privateKeyFileSafe(path, info) {
-		return nil, errors.New("serviceauth: signing key must be an owner-only regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	opened, statErr := file.Stat()
-	if statErr != nil || !privateKeyFileSafe(path, opened) || !os.SameFile(info, opened) {
-		_ = file.Close()
-		return nil, errors.New("serviceauth: signing key changed or became unsafe while opening")
-	}
-	data, readErr := io.ReadAll(io.LimitReader(file, 16*1024+1))
-	closeErr := file.Close()
-	if readErr != nil {
-		return nil, readErr
-	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
-	if len(data) > 16*1024 {
-		return nil, errors.New("serviceauth: signing key exceeds safety bound")
+		return nil, fmt.Errorf("serviceauth: signing key: %w", err)
 	}
 	block, rest := pem.Decode(data)
 	if block == nil || len(strings.TrimSpace(string(rest))) != 0 {
@@ -236,29 +208,4 @@ func LoadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 		return nil, errors.New("serviceauth: signing key must be P-256")
 	}
 	return key, nil
-}
-
-func privateKeyFileSafe(path string, info os.FileInfo) bool {
-	if info == nil || !info.Mode().IsRegular() {
-		return false
-	}
-	permissions := info.Mode().Perm()
-	if permissions&0o177 == 0 {
-		return true
-	}
-	// Current systemd exposes LoadCredential files as 0440 root:root plus an
-	// ACL granting only the service user access. Accept that one documented
-	// credential shape only for a direct child of the manager-provided private
-	// credential directory; ordinary group-readable key files remain rejected.
-	credentialDirectory := strings.TrimSpace(os.Getenv("CREDENTIALS_DIRECTORY"))
-	if permissions != 0o440 || credentialDirectory == "" || !filepath.IsAbs(credentialDirectory) {
-		return false
-	}
-	cleanDirectory := filepath.Clean(credentialDirectory)
-	directoryInfo, err := os.Lstat(cleanDirectory)
-	if err != nil || !directoryInfo.IsDir() {
-		return false
-	}
-	cleanPath := filepath.Clean(path)
-	return cleanPath != cleanDirectory && filepath.Dir(cleanPath) == cleanDirectory
 }

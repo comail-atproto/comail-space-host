@@ -20,6 +20,7 @@ import (
 	"github.com/comail-atproto/comail-space-host/internal/mailboxstate"
 	"github.com/comail-atproto/comail-space-host/internal/projection"
 	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/securefile"
 )
 
 type Options struct {
@@ -83,31 +84,11 @@ func LoadProviderEvidence(path, providerID, epoch string) (string, error) {
 		strings.ContainsAny(providerID+epoch, " \t\r\n\x00") {
 		return "", errors.New("authority certification: exact evidence path and provider are required")
 	}
-	info, err := os.Lstat(path)
+	data, err := securefile.Read(path, 64*1024)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("authority certification: evidence: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o177 != 0 {
-		return "", errors.New("authority certification: evidence must be an owner-only regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	opened, statErr := file.Stat()
-	if statErr != nil || !opened.Mode().IsRegular() || opened.Mode().Perm()&0o177 != 0 || !os.SameFile(info, opened) {
-		_ = file.Close()
-		return "", errors.New("authority certification: evidence changed or became unsafe while opening")
-	}
-	data, readErr := io.ReadAll(io.LimitReader(file, 64*1024+1))
-	closeErr := file.Close()
-	if readErr != nil {
-		return "", readErr
-	}
-	if closeErr != nil {
-		return "", closeErr
-	}
-	if len(data) == 0 || len(data) > 64*1024 {
+	if len(data) == 0 {
 		return "", errors.New("authority certification: evidence size is invalid")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
