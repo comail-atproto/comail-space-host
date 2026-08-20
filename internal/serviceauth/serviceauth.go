@@ -200,7 +200,7 @@ func LoadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o177 != 0 {
+	if !privateKeyFileSafe(path, info) {
 		return nil, errors.New("serviceauth: signing key must be an owner-only regular file")
 	}
 	file, err := os.Open(path)
@@ -208,7 +208,7 @@ func LoadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 		return nil, err
 	}
 	opened, statErr := file.Stat()
-	if statErr != nil || !opened.Mode().IsRegular() || opened.Mode().Perm()&0o177 != 0 || !os.SameFile(info, opened) {
+	if statErr != nil || !privateKeyFileSafe(path, opened) || !os.SameFile(info, opened) {
 		_ = file.Close()
 		return nil, errors.New("serviceauth: signing key changed or became unsafe while opening")
 	}
@@ -236,4 +236,29 @@ func LoadPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 		return nil, errors.New("serviceauth: signing key must be P-256")
 	}
 	return key, nil
+}
+
+func privateKeyFileSafe(path string, info os.FileInfo) bool {
+	if info == nil || !info.Mode().IsRegular() {
+		return false
+	}
+	permissions := info.Mode().Perm()
+	if permissions&0o177 == 0 {
+		return true
+	}
+	// Current systemd exposes LoadCredential files as 0440 root:root plus an
+	// ACL granting only the service user access. Accept that one documented
+	// credential shape only for a direct child of the manager-provided private
+	// credential directory; ordinary group-readable key files remain rejected.
+	credentialDirectory := strings.TrimSpace(os.Getenv("CREDENTIALS_DIRECTORY"))
+	if permissions != 0o440 || credentialDirectory == "" || !filepath.IsAbs(credentialDirectory) {
+		return false
+	}
+	cleanDirectory := filepath.Clean(credentialDirectory)
+	directoryInfo, err := os.Lstat(cleanDirectory)
+	if err != nil || !directoryInfo.IsDir() || directoryInfo.Mode().Perm()&0o077 != 0 {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	return cleanPath != cleanDirectory && filepath.Dir(cleanPath) == cleanDirectory
 }
