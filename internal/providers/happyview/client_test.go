@@ -193,6 +193,13 @@ func TestApplyWritesUsesAtomicBatchAndReadsCommit(t *testing.T) {
 	if commit.Rev != "r4" || commit.Hash != "h4" || len(commit.Results) != 2 {
 		t.Fatalf("commit = %#v", commit)
 	}
+	if len(doer.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(doer.requests))
+	}
+	commitURL := doer.requests[1].URL
+	if !strings.Contains(commitURL, "did="+url.QueryEscape(testWriterDID)) {
+		t.Fatalf("delegated commit URL does not use service writer: %s", commitURL)
+	}
 }
 
 func TestListRecordsScopesDelegatedReadsToServiceWriter(t *testing.T) {
