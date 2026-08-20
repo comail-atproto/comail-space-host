@@ -1,0 +1,170 @@
+diff --git a/src/spaces/routes.rs b/src/spaces/routes.rs
+index 2189f64..4ede0b5 100644
+--- a/src/spaces/routes.rs
++++ b/src/spaces/routes.rs
+@@ -378,0 +379,4 @@ async fn require_auth_or_credential(
++    if let Some(service_auth) = &claims.service_auth {
++        return Ok(service_auth.did.clone());
++    }
++
+@@ -396,0 +401,15 @@ async fn require_auth_or_credential(
++/// Resolve a caller DID for private-space discovery. Space credentials are not
++/// accepted here because they represent delegated access to records, while a
++/// verified service identity can itself be granted normal space membership.
++fn require_identity_or_service_auth(claims: &XrpcClaims) -> Result<String, AppError> {
++    if let Some(identity) = &claims.identity {
++        return Ok(identity.did().to_string());
++    }
++    if let Some(service_auth) = &claims.service_auth {
++        return Ok(service_auth.did.clone());
++    }
++    Err(AppError::Auth(
++        "This endpoint requires authentication".into(),
++    ))
++}
++
+@@ -442,2 +461 @@ async fn get_space(
+-        let claims = require_auth(&xrpc_claims)?;
+-        let did = claims.did();
++        let did = require_identity_or_service_auth(&xrpc_claims)?;
+@@ -445 +463 @@ async fn get_space(
+-            members::is_member(&state.db, state.db_backend, &space.id, did)
++            members::is_member(&state.db, state.db_backend, &space.id, &did)
+diff --git a/src/spaces/simplespace.rs b/src/spaces/simplespace.rs
+index 4e4e424..29d7ac5 100644
+--- a/src/spaces/simplespace.rs
++++ b/src/spaces/simplespace.rs
+@@ -161,0 +162,12 @@ fn require_auth(claims: &XrpcClaims) -> Result<&crate::auth::Claims, AppError> {
++fn require_identity_or_service_auth(claims: &XrpcClaims) -> Result<String, AppError> {
++    if let Some(identity) = &claims.identity {
++        return Ok(identity.did().to_string());
++    }
++    if let Some(service_auth) = &claims.service_auth {
++        return Ok(service_auth.did.clone());
++    }
++    Err(AppError::Auth(
++        "This endpoint requires authentication".into(),
++    ))
++}
++
+@@ -275,3 +287,2 @@ async fn list_members(
+-        let claims = require_auth(&xrpc_claims)?;
+-        let member =
+-            members::is_member(&state.db, state.db_backend, &space.id, claims.did()).await?;
++        let did = require_identity_or_service_auth(&xrpc_claims)?;
++        let member = members::is_member(&state.db, state.db_backend, &space.id, &did).await?;
+diff --git a/tests/spaces_records.rs b/tests/spaces_records.rs
+index 5dfc4d2..489737e 100644
+--- a/tests/spaces_records.rs
++++ b/tests/spaces_records.rs
+@@ -354,0 +355,110 @@ async fn create_record_rejects_unauthenticated() {
++/// A service identity that has been granted write membership can traverse the
++/// private-space discovery endpoints and then write records. Service-auth is
++/// verified by the normal XRPC middleware; membership remains the space-level
++/// authorization boundary.
++#[tokio::test]
++#[serial]
++async fn service_auth_member_can_open_private_space_and_write() {
++    common::require_db!();
++    let mut app = TestApp::new().await;
++    let plc_store = common::plc::setup_mock_plc(&app.mock_server).await;
++    let instance_did = app.setup_did_web().await;
++    enable_spaces(&app).await;
++    app.create_service_entry("#mailbox", "MailboxAdapter", "all")
++        .await;
++
++    let authority = rand_did("authority");
++    let service_did = rand_did("service");
++    let skey = rand_skey("space");
++    let (space_id, space_uri) = create_space(&app, &authority, &skey).await;
++    add_member(&app, &space_id, &service_did, SpaceAccess::Write).await;
++
++    let auth = app
++        .service_auth_jwt(&plc_store, &service_did, &instance_did, "#mailbox")
++        .await;
++    let auth_value = HeaderValue::from_str(&auth).unwrap();
++
++    let get_space = Request::builder()
++        .uri(format!(
++            "/xrpc/com.atproto.space.getSpace?space={}",
++            urlencoding::encode(&space_uri)
++        ))
++        .header("authorization", auth_value.clone())
++        .header("host", "127.0.0.1:0")
++        .body(Body::empty())
++        .unwrap();
++    let get_space_resp = app.router.clone().oneshot(get_space).await.unwrap();
++    assert_eq!(get_space_resp.status(), StatusCode::OK);
++
++    let list_members = Request::builder()
++        .uri(format!(
++            "/xrpc/com.atproto.simplespace.listMembers?space={}",
++            urlencoding::encode(&space_uri)
++        ))
++        .header("authorization", auth_value.clone())
++        .header("host", "127.0.0.1:0")
++        .body(Body::empty())
++        .unwrap();
++    let list_members_resp = app.router.clone().oneshot(list_members).await.unwrap();
++    assert_eq!(list_members_resp.status(), StatusCode::OK);
++
++    let mut create = create_record_req(
++        &space_uri,
++        "com.example.item",
++        &json!({ "$type": "com.example.item", "text": "service-auth write" }),
++        Some((HeaderName::from_static("authorization"), auth_value)),
++    );
++    create
++        .headers_mut()
++        .insert("host", HeaderValue::from_static("127.0.0.1:0"));
++    let create_resp = app.router.clone().oneshot(create).await.unwrap();
++    assert_eq!(create_resp.status(), StatusCode::CREATED);
++}
++
++/// Verifying a service-auth JWT authenticates the service DID but does not
++/// grant it access to a private space where it has no membership.
++#[tokio::test]
++#[serial]
++async fn service_auth_non_member_cannot_open_or_write_private_space() {
++    common::require_db!();
++    let mut app = TestApp::new().await;
++    let plc_store = common::plc::setup_mock_plc(&app.mock_server).await;
++    let instance_did = app.setup_did_web().await;
++    enable_spaces(&app).await;
++    app.create_service_entry("#mailbox", "MailboxAdapter", "all")
++        .await;
++
++    let authority = rand_did("authority");
++    let service_did = rand_did("service");
++    let skey = rand_skey("space");
++    let (_space_id, space_uri) = create_space(&app, &authority, &skey).await;
++    let auth = app
++        .service_auth_jwt(&plc_store, &service_did, &instance_did, "#mailbox")
++        .await;
++    let auth_value = HeaderValue::from_str(&auth).unwrap();
++
++    let get_space = Request::builder()
++        .uri(format!(
++            "/xrpc/com.atproto.space.getSpace?space={}",
++            urlencoding::encode(&space_uri)
++        ))
++        .header("authorization", auth_value.clone())
++        .header("host", "127.0.0.1:0")
++        .body(Body::empty())
++        .unwrap();
++    let get_space_resp = app.router.clone().oneshot(get_space).await.unwrap();
++    assert_eq!(get_space_resp.status(), StatusCode::NOT_FOUND);
++
++    let mut create = create_record_req(
++        &space_uri,
++        "com.example.item",
++        &json!({ "$type": "com.example.item", "text": "must not land" }),
++        Some((HeaderName::from_static("authorization"), auth_value)),
++    );
++    create
++        .headers_mut()
++        .insert("host", HeaderValue::from_static("127.0.0.1:0"));
++    let create_resp = app.router.clone().oneshot(create).await.unwrap();
++    assert_eq!(create_resp.status(), StatusCode::FORBIDDEN);
++}
++
