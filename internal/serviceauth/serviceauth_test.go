@@ -118,13 +118,47 @@ func TestLoadPrivateKeyRejectsBroadPermissions(t *testing.T) {
 	}
 }
 
+func TestLoadPrivateKeyAcceptsSystemdCredentialACLModeOnlyInCredentialDirectory(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTestPrivateKeyIn(t, dir, key, 0o440)
+
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	if _, err := LoadPrivateKey(path); err == nil {
+		t.Fatal("accepted group-readable signing key outside the systemd credential directory")
+	}
+
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
+	if _, err := LoadPrivateKey(path); err != nil {
+		t.Fatalf("load systemd credential signing key: %v", err)
+	}
+
+	broadDir := filepath.Join(t.TempDir(), "broad-credential-directory")
+	if err := os.Mkdir(broadDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broadPath := writeTestPrivateKeyIn(t, broadDir, key, 0o440)
+	t.Setenv("CREDENTIALS_DIRECTORY", broadDir)
+	if _, err := LoadPrivateKey(broadPath); err == nil {
+		t.Fatal("accepted systemd-style key from a traversable credential directory")
+	}
+}
+
 func writeTestPrivateKey(t *testing.T, key *ecdsa.PrivateKey, mode os.FileMode) string {
+	t.Helper()
+	return writeTestPrivateKeyIn(t, t.TempDir(), key, mode)
+}
+
+func writeTestPrivateKeyIn(t *testing.T, dir string, key *ecdsa.PrivateKey, mode os.FileMode) string {
 	t.Helper()
 	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "service-key.pem")
+	path := filepath.Join(dir, "service-key.pem")
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), mode); err != nil {
 		t.Fatal(err)
 	}
