@@ -2,6 +2,12 @@
 # Runs only against the exact disposable reference-PDS Spaces alpha image.
 # It never reads operator credentials or production data. Every owned resource
 # is labeled, ownership-checked, removed on exit, and verified absent.
+#
+# This wrapper deliberately contains only the one-command container lifecycle:
+# exact-image verification, an isolated network, random run-scoped secrets, and
+# fail-safe cleanup. Protocol assertions live in the adjacent Node proof. Keeping
+# this boundary out of the service binary makes recertification reproducible
+# without adding Docker or alpha-only dependencies to production code.
 set -euo pipefail
 umask 077
 
@@ -107,6 +113,26 @@ admin_password="$(openssl rand -hex 32)"
 account_password="$(openssl rand -hex 32)"
 
 docker pull --platform "${docker_platform}" "${image}" >/dev/null
+pulled_manifest="$(docker image inspect --format '{{.Descriptor.digest}}' "${image}")"
+pulled_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${image}")"
+pulled_epoch="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${image}")"
+if [[ "${pulled_manifest}" != "${docker_digest}" ]]; then
+  printf 'pulled image manifest does not match lock: expected %s, got %s\n' \
+    "${docker_digest}" "${pulled_manifest}" >&2
+  exit 1
+fi
+if [[ "${pulled_platform}" != "${docker_platform}" ]]; then
+  printf 'pulled image platform does not match lock: expected %s, got %s\n' \
+    "${docker_platform}" "${pulled_platform}" >&2
+  exit 1
+fi
+if [[ "${pulled_epoch}" != "${epoch}" ]]; then
+  printf 'pulled image source revision does not match lock: expected %s, got %s\n' \
+    "${epoch}" "${pulled_epoch}" >&2
+  exit 1
+fi
+# The exact OCI manifest transitively pins the recorded config digest; Docker's
+# local image ID is backend-dependent, so it is not used as a second trust root.
 docker network create --internal --label "${resource_label}" "${network}" >/dev/null
 docker volume create --label "${resource_label}" "${volume}" >/dev/null
 

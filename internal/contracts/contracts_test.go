@@ -225,6 +225,10 @@ func TestOfficialSpacesAlphaAssessmentPinsExactFailClosedBuild(t *testing.T) {
 	for _, required := range []string{
 		"lock_value docker_digest",
 		"lock_value docker_platform",
+		"docker image inspect --format '{{.Descriptor.digest}}' \"${image}\"",
+		"pulled image manifest does not match lock",
+		"pulled image platform does not match lock",
+		"pulled image source revision does not match lock",
 		"committed assessment does not match this exact proof run",
 		"comail.proof.run",
 	} {
