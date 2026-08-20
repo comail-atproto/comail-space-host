@@ -2,6 +2,46 @@
 
 Observed 2026-08-16; no production state was changed.
 
+## Official Spaces alpha compatibility (2026-08-20)
+
+The disposable proof in `scripts/test-official-spaces-alpha.sh` executes the
+exact `linux/amd64` reference-PDS image recorded in
+`providers/official-spaces-alpha.lock`. The proposal, Bulletin reference app,
+and SDK snapshot are review pins, not code executed by this proof. The wrapper
+uses a synthetic account, an in-memory PLC directory, random per-run secrets,
+an internal Docker network, and a fresh PDS volume. It ownership-checks and
+verifies cleanup of its containers, token-bearing files, database, network,
+and volume on exit. It never reads operator credentials or production data.
+
+The exact alpha accepted official `at://.../space/...` addressing,
+`com.atproto.simplespace.*` management, and `com.atproto.space.*` records. A
+bounded prepare captured and byte-verified 99 synthetic RFC 5322 messages; the
+immediate rerun reported `captured=0 skipped=99 verified=99`. A deliberately
+failing two-write batch rolled back its valid create, proving transaction
+atomicity. Delegation-token exchange, DPoP-bound reads, and exact wrong-key,
+wrong-space, and replay errors also passed. No activation path exists in the
+proof.
+
+These writes used `validate=false`: they prove the official record transport
+and the app's data shape, not validation of Comail's unpublished mailbox
+lexicons. The proof also uses the synthetic account's legacy access JWT, not
+the alpha SDK's narrow interactive OAuth grant. Both rows remain explicitly
+`not attempted` in the assessment and remain promotion blockers.
+
+This is deliberately a failing authority assessment. The alpha lexicons do
+not expose a record-CID or commit precondition. The reference PDS accepted an
+unknown stale `swapRecord` field and overwrote the newer state. The redacted
+result is recorded in `providers/official-spaces-alpha-assessment.json` with
+`compareAndSwap=false`, `authorityCertified=false`, and `passed=false`.
+Client-side read/check/write is not a substitute for provider-enforced CAS.
+
+The reusable production adapter also still needs the narrow OAuth grant and
+writer-repo lifecycle; the disposable proof currently uses only a synthetic
+account credential to exercise the official delegation and DPoP protocol.
+Real member mail therefore remains on unchanged Stalwart authority. The
+official alpha must not be wired into `cmd/comail-space-host`, admitted by the
+authority certificate loader, or used with sensitive data.
+
 ## Current bindings
 
 - Atmosphere identity: `did:plc:dy67wyyakm7u4v2lthy5zwbn`
