@@ -27,6 +27,14 @@ const testSteadySpaceScope = "space:email.atmos.mailbox?authority=did:plc:rfwhyw
 	"&collection=email.atmos.messageStateRevision" +
 	"&action=read&action=create"
 
+const testProvisioningSpaceScope = "space:email.atmos.mailbox?authority=did:plc:rfwhywgeym2ek7ioeyxkvsn6&skey=primary" +
+	"&collection=email.atmos.folderOperation" +
+	"&collection=email.atmos.folderRevision" +
+	"&collection=email.atmos.message" +
+	"&collection=email.atmos.messageStateOperation" +
+	"&collection=email.atmos.messageStateRevision" +
+	"&action=read_self&manage=create"
+
 func TestMailboxScopesAreExactAndAppendOnly(t *testing.T) {
 	scopes, err := MailboxScopes(testMemberDID, "primary")
 	if err != nil {
@@ -45,8 +53,7 @@ func TestProvisioningScopesAreSeparateAndCreateOnly(t *testing.T) {
 	}
 	want := []string{
 		"atproto",
-		"space:email.atmos.mailbox?authority=did:plc:rfwhywgeym2ek7ioeyxkvsn6&skey=primary" +
-			"&action=read_self&manage=create",
+		testProvisioningSpaceScope,
 	}
 	if !reflect.DeepEqual(scopes, want) {
 		t.Fatalf("scopes = %#v, want %#v", scopes, want)
@@ -72,7 +79,10 @@ func TestValidateProvisioningGrantRejectsSteadyOrWidenedGrant(t *testing.T) {
 		{name: "wildcard authority", scopes: replaceScope(provisioning, "authority="+testMemberDID, "authority=*")},
 		{name: "wildcard key", scopes: replaceScope(provisioning, "skey=primary", "skey=*")},
 		{name: "other key", scopes: replaceScope(provisioning, "skey=primary", "skey=secondary")},
-		{name: "irrelevant collections", scopes: replaceScope(provisioning, "&action=read_self", "&collection=email.atmos.message&action=read_self")},
+		{name: "missing collection", scopes: replaceScope(provisioning, "&collection=email.atmos.folderRevision", "")},
+		{name: "foreign collection", scopes: replaceScope(provisioning, "collection=email.atmos.message", "collection=app.example.message")},
+		{name: "collection wildcard", scopes: replaceScope(provisioning, "collection=email.atmos.message", "collection=*")},
+		{name: "duplicate collection", scopes: replaceScope(provisioning, "&action=read_self", "&collection=email.atmos.message&action=read_self")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

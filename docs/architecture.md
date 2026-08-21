@@ -183,10 +183,14 @@ would keep it as a rollback artifact under the existing retention policy.
 
 The official Spaces profile uses two separate browser authorizations. A
 one-time provisioning grant is bound to the exact authority DID and exact
-mailbox key and carries only `action=read_self&manage=create`. It creates or
-reconciles a member-list/open-app space, proves that the fresh space has zero
-explicit members (the owner is implicit), then revokes both OAuth tokens and
-deletes the encrypted local session before reporting success.
+mailbox key and carries only `action=read_self&manage=create`. It explicitly
+freezes the declaration's exact five collections because the alpha otherwise
+expands an omitted collection set to those declaration defaults. Those
+collections add no record-write action; wildcard, create, update, and delete
+record actions remain absent. The grant creates or reconciles a
+member-list/open-app space, proves that the fresh space has zero explicit
+members (the owner is implicit), then revokes both OAuth tokens and deletes the
+encrypted local session before reporting success.
 
 The steady grant is separately bound to that exact DID and key. It carries
 only `read` and `create` over the five append-only mailbox collections plus a
