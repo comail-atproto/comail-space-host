@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 	"github.com/comail-atproto/comail-space-host/internal/providers/officialspaces"
 	"github.com/comail-atproto/comail-space-host/internal/spacecredential"
 	"github.com/ipfs/go-cid"
@@ -78,6 +79,23 @@ func TestReduceOfficialSpacesSourceRedactsSemanticRecordFailure(t *testing.T) {
 
 func readSyntheticAuthenticatedSource(t *testing.T, inventory officialSpacesInventory) *officialspaces.SourceAuthenticatedRepository {
 	t.Helper()
+	client, credentials := newSyntheticAuthenticatedClient(t, inventory, nil)
+	source, err := client.ReadSourceAuthenticatedRepository(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentials.acquired != 1 || credentials.closed != 1 {
+		t.Fatalf("credential acquired=%d closed=%d", credentials.acquired, credentials.closed)
+	}
+	return source
+}
+
+func newSyntheticAuthenticatedClient(
+	t *testing.T,
+	inventory officialSpacesInventory,
+	blobs map[string][]byte,
+) (*officialspaces.Client, *syntheticSourceCredentials) {
+	t.Helper()
 	privateKey, err := atcrypto.ParsePrivateBytesP256(bytes.Repeat([]byte{0x71}, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +129,7 @@ func readSyntheticAuthenticatedSource(t *testing.T, inventory officialSpacesInve
 	}
 
 	latest, car := encodeSyntheticSource(t, inventory, privateKey)
-	credentials := &syntheticSourceCredentials{t: t, target: inventory.target, latest: latest, car: car}
+	credentials := &syntheticSourceCredentials{t: t, target: inventory.target, latest: latest, car: car, blobs: blobs}
 	client, err := officialspaces.New(officialspaces.Config{
 		Origin: inventory.target.Origin, SpaceAuthorityDID: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
 		RepoDID: inventory.target.RepoDID, SpaceKey: "primary", Epoch: officialspaces.PinnedEpoch,
@@ -120,23 +138,19 @@ func readSyntheticAuthenticatedSource(t *testing.T, inventory officialSpacesInve
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := client.ReadSourceAuthenticatedRepository(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if credentials.acquired != 1 || credentials.closed != 1 {
-		t.Fatalf("credential acquired=%d closed=%d", credentials.acquired, credentials.closed)
-	}
-	return source
+	return client, credentials
 }
 
 type syntheticSourceCredentials struct {
 	t        *testing.T
 	target   officialspaces.Target
 	latest   string
+	after    string
 	car      []byte
+	blobs    map[string][]byte
 	acquired int
 	closed   int
+	blobGets int
 }
 
 func (source *syntheticSourceCredentials) AcquireReader(_ context.Context, target officialspaces.Target) (officialspaces.ScopedDoer, error) {
@@ -144,7 +158,7 @@ func (source *syntheticSourceCredentials) AcquireReader(_ context.Context, targe
 		return nil, errors.New("synthetic source target mismatch")
 	}
 	source.acquired++
-	return &syntheticSourceDoer{source: source}, nil
+	return &syntheticSourceDoer{source: source, acquisition: source.acquired}, nil
 }
 
 func (source *syntheticSourceCredentials) AcquireWriter(context.Context, officialspaces.Target) (officialspaces.ScopedDoer, error) {
@@ -152,14 +166,48 @@ func (source *syntheticSourceCredentials) AcquireWriter(context.Context, officia
 }
 
 type syntheticSourceDoer struct {
-	source *syntheticSourceCredentials
-	calls  int
+	source      *syntheticSourceCredentials
+	acquisition int
+	calls       int
 }
 
 func (doer *syntheticSourceDoer) Do(_ context.Context, request *http.Request, endpoint string) (*http.Response, error) {
 	doer.calls++
 	var contentType string
 	var body []byte
+	if doer.acquisition > 1 {
+		switch {
+		case doer.calls == 1:
+			if endpoint != "com.atproto.space.getLatestCommit" {
+				doer.source.t.Fatalf("blob pre-read endpoint=%q", endpoint)
+			}
+			contentType, body = "application/json", []byte(doer.source.latest)
+		case doer.calls == len(doer.source.blobs)+2:
+			if endpoint != "com.atproto.space.getLatestCommit" {
+				doer.source.t.Fatalf("blob post-read endpoint=%q", endpoint)
+			}
+			latest := doer.source.after
+			if latest == "" {
+				latest = doer.source.latest
+			}
+			contentType, body = "application/json", []byte(latest)
+		default:
+			if endpoint != "com.atproto.space.getBlob" {
+				doer.source.t.Fatalf("blob endpoint=%q", endpoint)
+			}
+			blobCID := request.URL.Query().Get("cid")
+			data, ok := doer.source.blobs[blobCID]
+			if !ok {
+				doer.source.t.Fatalf("unexpected blob CID %q", blobCID)
+			}
+			doer.source.blobGets++
+			contentType, body = mailbox.MessageMIMEType, data
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}},
+			Body: io.NopCloser(bytes.NewReader(body)), Request: request,
+		}, nil
+	}
 	switch doer.calls {
 	case 1, 3:
 		if endpoint != "com.atproto.space.getLatestCommit" {
@@ -181,7 +229,7 @@ func (doer *syntheticSourceDoer) Do(_ context.Context, request *http.Request, en
 }
 
 func (doer *syntheticSourceDoer) Close() {
-	if doer.calls != 3 {
+	if doer.acquisition == 1 && doer.calls != 3 {
 		doer.source.t.Errorf("source credential closed after %d calls", doer.calls)
 	}
 	doer.source.closed++

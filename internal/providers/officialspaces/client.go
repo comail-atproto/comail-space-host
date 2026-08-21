@@ -526,32 +526,9 @@ func (c *Client) GetBlob(ctx context.Context, cid string) ([]byte, error) {
 	}
 	var blob []byte
 	err := c.withReader(ctx, func(credential ScopedDoer) error {
-		query := targetQuery(c.target)
-		query.Set("cid", cid)
-		response, err := c.request(ctx, credential, http.MethodGet, getBlobEndpoint, query, nil, "", mailbox.MessageMIMEType)
+		data, err := c.readMessageBlob(ctx, credential, cid)
 		if err != nil {
 			return err
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return decodeProviderError(response)
-		}
-		mediaType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
-		if parseErr != nil || !strings.EqualFold(mediaType, mailbox.MessageMIMEType) {
-			return fmt.Errorf("%w: blob media type mismatch", mailbox.ErrIntegrity)
-		}
-		data, readErr := io.ReadAll(io.LimitReader(response.Body, mailbox.MaxRawMessageBytes+1))
-		if readErr != nil {
-			return errors.New("officialspaces: read blob")
-		}
-		if len(data) == 0 {
-			return fmt.Errorf("%w: blob is empty", mailbox.ErrIntegrity)
-		}
-		if len(data) > mailbox.MaxRawMessageBytes {
-			return mailbox.ErrMessageTooLarge
-		}
-		if !validBlobCID(cid, data) {
-			return fmt.Errorf("%w: blob CID does not match content", mailbox.ErrIntegrity)
 		}
 		blob = data
 		return nil
@@ -671,7 +648,8 @@ func validRawCID(raw string) bool {
 		return false
 	}
 	prefix := parsed.Prefix()
-	return prefix.Version == 1 && prefix.Codec == cidlib.Raw && prefix.MhType == multihash.SHA2_256 && prefix.MhLength == sha256.Size
+	return parsed.String() == raw && prefix.Version == 1 && prefix.Codec == cidlib.Raw &&
+		prefix.MhType == multihash.SHA2_256 && prefix.MhLength == sha256.Size
 }
 
 func validBlobCID(raw string, data []byte) bool {

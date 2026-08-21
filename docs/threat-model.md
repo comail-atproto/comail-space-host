@@ -40,6 +40,11 @@ logs, and unauthenticated clients must not.
   raw CAR bytes, record slices, snapshot IDs, and completeness flags cannot.
   Reduced metadata/state remains non-projectable until each referenced blob is
   fetched from the same exact target and its RFC 5322 bytes are hash-verified.
+- The byte-complete constructor accepts only the exact-target client and
+  internally performs a fresh source read. Blob reads re-resolve the current
+  PDS before authentication, bracket the full batch with source-matching
+  latest commits, validate every historical version, and emit no capability
+  on partial failure or more than 64 MiB of unique content.
 - Projectors use cross-process fencing and poison-record quarantine.
 - Queue and vault encryption keys live outside their databases and rotate.
 - Logs and evidence reject tokens and message-derived text; hashes and counts
