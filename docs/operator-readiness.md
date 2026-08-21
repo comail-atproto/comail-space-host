@@ -50,8 +50,9 @@ the same disposable volume and repeats source-authenticated recovery and fresh
 projection successfully. The exact result is recorded in
 `providers/official-spaces-alpha-mailbox-validation-assessment.json`.
 This is isolated compatibility evidence, not hosted-provider acceptance: the
-five schemas are not yet published at the live authority, and the hosted alpha
-does not yet resolve third-party published record schemas.
+five source documents now match the promoted alpha-candidate bytes exactly but
+are not yet published at the live authority, and the hosted alpha does not yet
+resolve third-party published record schemas.
 
 This is deliberately a failing authority assessment. The alpha lexicons do
 not expose a record-CID or commit precondition. The reference PDS accepted an

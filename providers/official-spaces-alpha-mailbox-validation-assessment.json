@@ -9,12 +9,12 @@
     "baseImage": "ghcr.io/bluesky-social/atproto:pds-spaces-alpha@sha256:9641f3d5c4ce2bffeee3cd740284c7fc445ef4b4e2ba73f01bf19a59923d0dd4",
     "platform": "linux/amd64",
     "patchedPrepareSHA256": "3514e51518ff93e3f7d6e1d3533e064c77c79d4b0e82475ec5b1392eaa4cfa32",
-    "installerSHA256": "17a1945f7cebd70fd0626b54502b6a414feaadf0e43108a8f474d9588e1708f7",
+    "installerSHA256": "d0ade06b150f3110728c3b100bc4a3565728f49edd7f4883250fbd9e08ffcaab",
     "recipeSHA256": "7723c6a9a9677df9e4002958eb30e7b0fcc5ad02a5371e27df776025aba0daf7",
-    "schemaBundleSHA256": "637a0a17ea286ead7703b8769e4031cd345e13d3ea0a4edebed351bd4915a7b8"
+    "schemaBundleSHA256": "269570a8ed7ef7f2fcfdb235714fb523dae2cecfb09d6f68887e898654dcf0fe"
   },
   "checks": {
-    "unmodifiedBaseRejectsStrictSchemas": "pass: validate=true rejected the unpublished third-party record and committed nothing",
+    "unmodifiedBaseRejectsStrictSchemas": "pass: validate=true rejected the unregistered third-party record and committed nothing",
     "mailboxLexiconValidation": "pass: all 311 create receipts returned validationStatus=valid across the exact five schemas",
     "failClosedValidation": "pass: invalid known-schema and unknown-schema writes were rejected without residual records",
     "atomicApplyWrites": "pass: a failing two-create batch rolled back its valid first create",

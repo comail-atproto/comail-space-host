@@ -20,7 +20,8 @@ mailbox, routing, or flag changes are authorized by passing these gates.
 - [ ] Message-size and quota limits are measured and compatible.
 - [ ] Mailbox Lexicons are provider-registered and server validation is
       enabled, or an equivalently strict certified validation path is approved.
-- [x] The exact official-alpha digest plus an isolated five-schema install
+- [x] The exact official-alpha digest plus an isolated install of the five
+      byte-pinned alpha-candidate schemas
       accepts 311 `validate=true` creates, rejects invalid/unknown schemas, and
       rolls back a failing mixed batch. This does not satisfy hosted registration.
 
