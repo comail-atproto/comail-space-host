@@ -19,6 +19,8 @@ const (
 	// collection and cannot satisfy a v3 authority certificate.
 	MessageStateRevisionCollection  = "email.atmos.messageStateRevision"
 	MessageStateOperationCollection = "email.atmos.messageStateOperation"
+	FolderRevisionCollection        = "email.atmos.folderRevision"
+	FolderOperationCollection       = "email.atmos.folderOperation"
 	FolderCollection                = "email.atmos.folder"
 	MessageMIMEType                 = "message/rfc822"
 	MaxRawMessageBytes              = 10 * 1024 * 1024
@@ -266,6 +268,18 @@ func folderRKeys(names []string) []string {
 // and full mailbox path. It is deterministic across clean rebuilds.
 func StableUIDValidity(recipientDID, mailboxName string) uint32 {
 	sum := sha256.Sum256([]byte("comail-uidvalidity-v1\x00" + recipientDID + "\x00" + mailboxName))
+	return nonzeroUint32(sum)
+}
+
+// StableFolderUIDValidity is the v3 projection identity. It survives display
+// name changes because it binds the repository and stable folder ID, not the
+// mutable folder name.
+func StableFolderUIDValidity(recipientDID, folderID string) uint32 {
+	sum := sha256.Sum256([]byte("comail-folder-uidvalidity-v1\x00" + recipientDID + "\x00" + folderID))
+	return nonzeroUint32(sum)
+}
+
+func nonzeroUint32(sum [sha256.Size]byte) uint32 {
 	value := uint32(sum[0])<<24 | uint32(sum[1])<<16 | uint32(sum[2])<<8 | uint32(sum[3])
 	if value == 0 {
 		return 1

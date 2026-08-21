@@ -15,20 +15,22 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 )
 
 const (
-	MessageStateRevisionCollection  = mailbox.MessageStateRevisionCollection
-	MessageStateOperationCollection = mailbox.MessageStateOperationCollection
-	maxParents                      = 64
-	maxKeywords                     = 128
-	maxMailboxes                    = 32
-	maxIdentifierBytes              = 512
-	maxOperationIDBytes             = 128
-	maxRevisionCount                = 4096
-	maxRevisionRecordBytes          = 128 * 1024
-	maxRevisionInventoryBytes       = 8 * 1024 * 1024
+	MessageStateRevisionCollection         = mailbox.MessageStateRevisionCollection
+	MessageStateOperationCollection        = mailbox.MessageStateOperationCollection
+	maxParents                             = 64
+	maxKeywords                            = 128
+	maxMailboxes                           = 32
+	maxIdentifierBytes                     = 512
+	maxOperationIDBytes                    = 128
+	maxRevisionCount                       = 4096
+	maxRevisionRecordBytes                 = 128 * 1024
+	maxRevisionInventoryBytes              = 8 * 1024 * 1024
+	maxPortableRevision             uint64 = 9_007_199_254_740_991
 )
 
 var (
@@ -96,12 +98,18 @@ type OperationClaim struct {
 // commit/CAR verifier is wired in, production code cannot self-assert snapshot
 // completeness by setting a boolean or count.
 type VerifiedSnapshot struct {
-	snapshotID      string
-	revisionCount   int
-	operationClaims map[string]string
-	versions        map[string]struct{}
-	folders         map[string]struct{}
-	seal            [sha256.Size]byte
+	snapshotID       string
+	logicalMessageID string
+	revisionCount    int
+	operationClaims  map[string]string
+	versions         map[string]string
+	folders          map[string]verifiedFolderReference
+	seal             [sha256.Size]byte
+}
+
+type verifiedFolderReference struct {
+	stateDigest string
+	tombstone   bool
 }
 
 // DecodeRevisionRecord is the only supported wire decoder. Strict decoding is
@@ -247,8 +255,7 @@ func CanonicalRevisionBytes(record RevisionRecord) ([]byte, error) {
 // during every rebuild. The operation ID remains inside the commitment so an
 // exact retry derives the same key.
 func StateRevisionRKey(repoDID string, record RevisionRecord) (string, error) {
-	if !validIdentifier(repoDID, maxIdentifierBytes) || !strings.HasPrefix(repoDID, "did:") ||
-		!validIdentifier(record.LogicalMessageID, maxIdentifierBytes) ||
+	if !validCanonicalDID(repoDID) || !validSHA256Identifier(record.LogicalMessageID) ||
 		!validIdentifier(record.OperationID, maxOperationIDBytes) {
 		return "", ErrInvalidRevision
 	}
@@ -265,8 +272,7 @@ func StateRevisionRKey(repoDID string, record RevisionRecord) (string, error) {
 }
 
 func OperationClaimRKey(repoDID, logicalMessageID, operationID string) (string, error) {
-	if !validIdentifier(repoDID, maxIdentifierBytes) || !strings.HasPrefix(repoDID, "did:") ||
-		!validIdentifier(logicalMessageID, maxIdentifierBytes) ||
+	if !validCanonicalDID(repoDID) || !validSHA256Identifier(logicalMessageID) ||
 		!validIdentifier(operationID, maxOperationIDBytes) {
 		return "", ErrInvalidRevision
 	}
@@ -307,14 +313,17 @@ func VerifyOperationClaimRetry(expected, stored OperationClaim) error {
 	return nil
 }
 
-// VerifyRevisionRetry accepts an exact lost-response replay and rejects a
-// second semantic payload that reuses the same operation ID.
+// VerifyRevisionRetry accepts a semantic lost-response replay and rejects a
+// changed payload that reuses the same operation ID. CreatedAt is assigned once
+// by the successful writer and is audit metadata, so reconstructing an
+// otherwise identical retry with a new timestamp returns the stored result.
 func VerifyRevisionRetry(repoDID string, expected, stored StateRevision) error {
 	expectedKey, expectedErr := StateRevisionRKey(repoDID, expected.Record)
 	storedKey, storedErr := StateRevisionRKey(repoDID, stored.Record)
-	if expectedErr != nil || storedErr != nil || expected.RKey != stored.RKey ||
-		expected.RKey != expectedKey || stored.RKey != storedKey ||
-		!reflect.DeepEqual(expected.Record, stored.Record) {
+	expectedRecord, storedRecord := expected.Record, stored.Record
+	expectedRecord.CreatedAt, storedRecord.CreatedAt = "", ""
+	if expectedErr != nil || storedErr != nil || expected.RKey != expectedKey || stored.RKey != storedKey ||
+		!reflect.DeepEqual(expectedRecord, storedRecord) {
 		return ErrOperationCollision
 	}
 	return nil
@@ -328,11 +337,10 @@ func Reduce(repoDID, logicalMessageID string, revisions []StateRevision, invento
 	if len(revisions) > maxRevisionCount {
 		return ReducedState{}, ErrResourceLimit
 	}
-	if !validIdentifier(repoDID, maxIdentifierBytes) || !strings.HasPrefix(repoDID, "did:") ||
-		!validIdentifier(logicalMessageID, maxIdentifierBytes) || len(revisions) == 0 {
+	if !validCanonicalDID(repoDID) || !validSHA256Identifier(logicalMessageID) || len(revisions) == 0 {
 		return ReducedState{}, ErrInvalidRevision
 	}
-	if !inventory.valid() || inventory.revisionCount != len(revisions) {
+	if !inventory.validFor(logicalMessageID, len(revisions)) {
 		return ReducedState{}, ErrIncompleteSnapshot
 	}
 
@@ -456,6 +464,12 @@ func Reduce(repoDID, logicalMessageID string, revisions []StateRevision, invento
 	}
 	if state.Tombstone {
 		state.DeletePending = false
+	} else {
+		for _, folder := range state.MailboxIDs {
+			if reference, ok := inventory.folders[folder]; !ok || reference.tombstone || !validSHA256Identifier(reference.stateDigest) {
+				return ReducedState{}, fmt.Errorf("%w: live folder", ErrInvalidReference)
+			}
+		}
 	}
 	for keyword, present := range keywordState {
 		if present {
@@ -481,7 +495,7 @@ func validateRevision(repoDID, logicalMessageID string, event StateRevision, inv
 		record.LogicalMessageID != logicalMessageID ||
 		err != nil || event.RKey != expectedRKey ||
 		!validIdentifier(record.OperationID, maxOperationIDBytes) ||
-		record.Parents == nil || record.Revision == 0 || len(record.Parents) > maxParents {
+		record.Parents == nil || record.Revision == 0 || record.Revision > maxPortableRevision || len(record.Parents) > maxParents {
 		return ErrInvalidRevision
 	}
 	if _, err := time.Parse(time.RFC3339Nano, record.CreatedAt); err != nil {
@@ -496,10 +510,10 @@ func validateRevision(repoDID, logicalMessageID string, event StateRevision, inv
 		}
 	}
 	if record.Version != "" {
-		if !validIdentifier(record.Version, maxIdentifierBytes) {
+		if !validSHA256Identifier(record.Version) {
 			return ErrInvalidRevision
 		}
-		if _, ok := inventory.versions[record.Version]; !ok {
+		if owner, ok := inventory.versions[record.Version]; !ok || owner != logicalMessageID {
 			return fmt.Errorf("%w: message version", ErrInvalidReference)
 		}
 	}
@@ -508,10 +522,14 @@ func validateRevision(repoDID, logicalMessageID string, event StateRevision, inv
 			return ErrInvalidRevision
 		}
 		for _, folder := range record.MailboxIDs {
-			if !validIdentifier(folder, maxIdentifierBytes) {
+			if !validFolderID(folder) {
 				return ErrInvalidRevision
 			}
-			if _, ok := inventory.folders[folder]; !ok {
+			// Historical assignments remain valid after a later move and folder
+			// deletion. The authenticated folder-state digest proves the folder
+			// existed; Reduce separately requires the live message's final
+			// assignments to reference folders that are not tombstoned.
+			if reference, ok := inventory.folders[folder]; !ok || !validSHA256Identifier(reference.stateDigest) {
 				return fmt.Errorf("%w: folder", ErrInvalidReference)
 			}
 		}
@@ -548,6 +566,20 @@ func validIdentifier(value string, limit int) bool {
 	return value != "" && len(value) <= limit && utf8.ValidString(value) && !strings.ContainsAny(value, " \t\r\n\x00")
 }
 
+func validCanonicalDID(value string) bool {
+	did, err := syntax.ParseDID(value)
+	return err == nil && did.String() == value
+}
+
+func validSHA256Identifier(value string) bool {
+	if len(value) != len("sha256-")+sha256.Size*2 || !strings.HasPrefix(value, "sha256-") {
+		return false
+	}
+	encoded := strings.TrimPrefix(value, "sha256-")
+	_, err := hex.DecodeString(encoded)
+	return err == nil && encoded == strings.ToLower(encoded)
+}
+
 func validText(value string, limit int) bool {
 	return value != "" && len(value) <= limit && utf8.ValidString(value) && !strings.ContainsAny(value, "\r\n\x00")
 }
@@ -569,9 +601,10 @@ func strictlySortedUnique(values []string) bool {
 	return true
 }
 
-func (inventory VerifiedSnapshot) valid() bool {
-	if !validIdentifier(inventory.snapshotID, maxIdentifierBytes) || inventory.revisionCount < 1 ||
-		len(inventory.operationClaims) != inventory.revisionCount {
+func (inventory VerifiedSnapshot) validFor(logicalMessageID string, revisionCount int) bool {
+	if !validIdentifier(inventory.snapshotID, maxIdentifierBytes) ||
+		inventory.logicalMessageID != logicalMessageID || inventory.revisionCount != revisionCount ||
+		revisionCount < 1 || len(inventory.operationClaims) != revisionCount {
 		return false
 	}
 	return inventory.seal == inventory.snapshotSeal()
@@ -581,6 +614,7 @@ func (inventory VerifiedSnapshot) snapshotSeal() [sha256.Size]byte {
 	var encoded canonicalWriter
 	encoded.raw("comail-verified-mailbox-snapshot-v1\x00")
 	encoded.string(inventory.snapshotID)
+	encoded.string(inventory.logicalMessageID)
 	encoded.uint64(uint64(inventory.revisionCount))
 	claimKeys := sortedMapKeys(inventory.operationClaims)
 	encoded.uint64(uint64(len(claimKeys)))
@@ -588,8 +622,23 @@ func (inventory VerifiedSnapshot) snapshotSeal() [sha256.Size]byte {
 		encoded.string(key)
 		encoded.string(inventory.operationClaims[key])
 	}
-	encoded.strings(sortedSetKeys(inventory.versions))
-	encoded.strings(sortedSetKeys(inventory.folders))
+	versionKeys := sortedMapKeys(inventory.versions)
+	encoded.uint64(uint64(len(versionKeys)))
+	for _, key := range versionKeys {
+		encoded.string(key)
+		encoded.string(inventory.versions[key])
+	}
+	folderKeys := make([]string, 0, len(inventory.folders))
+	for key := range inventory.folders {
+		folderKeys = append(folderKeys, key)
+	}
+	sortUTF8(folderKeys)
+	encoded.uint64(uint64(len(folderKeys)))
+	for _, key := range folderKeys {
+		encoded.string(key)
+		encoded.string(inventory.folders[key].stateDigest)
+		encoded.boolean(inventory.folders[key].tombstone)
+	}
 	return sha256.Sum256(encoded.bytes)
 }
 
@@ -660,15 +709,6 @@ func (writer *canonicalWriter) strings(values []string) {
 }
 
 func sortedMapKeys(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sortUTF8(keys)
-	return keys
-}
-
-func sortedSetKeys(values map[string]struct{}) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

@@ -134,3 +134,14 @@ func TestFolderIdentityIsDeterministicButNameSensitive(t *testing.T) {
 		t.Fatal("case-preserved source folders collided")
 	}
 }
+
+func TestV3FolderUIDValidityUsesStableFolderIdentityNotDisplayName(t *testing.T) {
+	const repoDID = "did:plc:alice"
+	const folderID = "folder-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	first := StableFolderUIDValidity(repoDID, folderID)
+	second := StableFolderUIDValidity(repoDID, folderID)
+	other := StableFolderUIDValidity(repoDID, "folder-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if first == 0 || first != second || first == other {
+		t.Fatalf("stable folder UIDVALIDITY first=%d second=%d other=%d", first, second, other)
+	}
+}

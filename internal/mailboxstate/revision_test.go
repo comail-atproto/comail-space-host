@@ -16,6 +16,7 @@ const (
 	testLogicalID = "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	testVersion   = "sha256-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	testFolder    = "folder-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	testFolderB   = "folder-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 )
 
 func TestReduceRevisionsIsPermutationInvariantAndComposesConcurrentFields(t *testing.T) {
@@ -163,10 +164,10 @@ func TestVerifyRevisionRetryDistinguishesExactReplayFromCollision(t *testing.T) 
 	}
 	collision := revision
 	collision.Record.CreatedAt = time.Date(2026, 8, 20, 1, 2, 4, 0, time.UTC).Format(time.RFC3339Nano)
-	if err := VerifyRevisionRetry(testRepoDID, revision, collision); !errors.Is(err, ErrOperationCollision) {
-		t.Fatalf("collision error = %v", err)
-	}
 	collision = sealRevision(t, collision)
+	if err := VerifyRevisionRetry(testRepoDID, revision, collision); err != nil {
+		t.Fatalf("semantic retry with new server time: %v", err)
+	}
 	expectedClaim := testOperationClaim(t, revision)
 	collisionClaim := testOperationClaim(t, collision)
 	if expectedClaim.RKey != collisionClaim.RKey {
@@ -174,6 +175,11 @@ func TestVerifyRevisionRetryDistinguishesExactReplayFromCollision(t *testing.T) 
 	}
 	if err := VerifyOperationClaimRetry(expectedClaim, collisionClaim); !errors.Is(err, ErrOperationCollision) {
 		t.Fatalf("operation claim collision error = %v", err)
+	}
+	collision.Record.Keywords = []KeywordAssignment{{Name: "$seen", Present: true}}
+	collision = sealRevision(t, collision)
+	if err := VerifyRevisionRetry(testRepoDID, revision, collision); !errors.Is(err, ErrOperationCollision) {
+		t.Fatalf("changed semantic payload error = %v", err)
 	}
 	if _, err := Reduce(testRepoDID, testLogicalID, []StateRevision{revision, collision}, testInventory(revision, collision)); !errors.Is(err, ErrIncompleteSnapshot) {
 		t.Fatalf("poisoned duplicate operation error = %v", err)
@@ -204,6 +210,113 @@ func TestReduceRevisionsRejectsTamperingAndIncompleteSnapshot(t *testing.T) {
 	}
 }
 
+func TestReduceRevisionsBindsVersionsAndLiveFoldersToResource(t *testing.T) {
+	root := testRevision(t, "initial", nil, 1)
+	root.Record.Version = testVersion
+	root.Record.MailboxIDs = []string{testFolder}
+	root = sealRevision(t, root)
+
+	foreignVersion := testInventory(root)
+	foreignVersion.versions[testVersion] = "sha256-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	foreignVersion.seal = foreignVersion.snapshotSeal()
+	if _, err := Reduce(testRepoDID, testLogicalID, []StateRevision{root}, foreignVersion); !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("cross-message version error = %v", err)
+	}
+
+	deletedFolder := testInventory(root)
+	reference := deletedFolder.folders[testFolder]
+	reference.tombstone = true
+	deletedFolder.folders[testFolder] = reference
+	deletedFolder.seal = deletedFolder.snapshotSeal()
+	if _, err := Reduce(testRepoDID, testLogicalID, []StateRevision{root}, deletedFolder); !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("deleted-folder reference error = %v", err)
+	}
+
+	malformedFolderDigest := testInventory(root)
+	reference = malformedFolderDigest.folders[testFolder]
+	reference.stateDigest = "not-a-digest"
+	malformedFolderDigest.folders[testFolder] = reference
+	malformedFolderDigest.seal = malformedFolderDigest.snapshotSeal()
+	if _, err := Reduce(testRepoDID, testLogicalID, []StateRevision{root}, malformedFolderDigest); !errors.Is(err, ErrInvalidReference) {
+		t.Fatalf("malformed folder-state digest error = %v", err)
+	}
+}
+
+func TestMessageStateIdentifiersRequireCanonicalSHA256AndRepositoryDID(t *testing.T) {
+	revision := testRevision(t, "initial", nil, 1)
+	revision.Record.Version = testVersion
+	revision.Record.MailboxIDs = []string{testFolder}
+
+	for _, logicalID := range []string{
+		"sha256-short",
+		"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"blake3-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	} {
+		revision.Record.LogicalMessageID = logicalID
+		if _, err := StateRevisionRKey(testRepoDID, revision.Record); !errors.Is(err, ErrInvalidRevision) {
+			t.Errorf("StateRevisionRKey logical ID %q error = %v", logicalID, err)
+		}
+		if _, err := OperationClaimRKey(testRepoDID, logicalID, "initial"); !errors.Is(err, ErrInvalidRevision) {
+			t.Errorf("OperationClaimRKey logical ID %q error = %v", logicalID, err)
+		}
+	}
+
+	revision.Record.LogicalMessageID = testLogicalID
+	for _, repoDID := range []string{"did:", "did:PLC:rfwhywgeym2ek7ioeyxkvsn6", "not-a-did"} {
+		if _, err := StateRevisionRKey(repoDID, revision.Record); !errors.Is(err, ErrInvalidRevision) {
+			t.Errorf("StateRevisionRKey(%q) error = %v", repoDID, err)
+		}
+	}
+
+	invalidVersion := revision
+	invalidVersion.Record.Version = "sha256-" + strings.Repeat("A", 64)
+	invalidVersion = sealRevision(t, invalidVersion)
+	versionInventory := testInventory(invalidVersion)
+	versionInventory.versions[invalidVersion.Record.Version] = testLogicalID
+	versionInventory.seal = versionInventory.snapshotSeal()
+	if _, err := Reduce(testRepoDID, testLogicalID, []StateRevision{invalidVersion}, versionInventory); !errors.Is(err, ErrInvalidRevision) {
+		t.Errorf("noncanonical version error = %v", err)
+	}
+
+	invalidFolder := revision
+	invalidFolder.Record.MailboxIDs = []string{"folder-short"}
+	invalidFolder = sealRevision(t, invalidFolder)
+	folderInventory := testInventory(invalidFolder)
+	folderInventory.folders[invalidFolder.Record.MailboxIDs[0]] = verifiedFolderReference{stateDigest: digestBytes([]byte("invalid-folder"))}
+	folderInventory.seal = folderInventory.snapshotSeal()
+	if _, err := Reduce(testRepoDID, testLogicalID, []StateRevision{invalidFolder}, folderInventory); !errors.Is(err, ErrInvalidRevision) {
+		t.Errorf("noncanonical folder ID error = %v", err)
+	}
+}
+
+func TestReduceRevisionsAllowsHistoricalReferenceToDeletedFolderAfterMove(t *testing.T) {
+	root := testRevision(t, "initial", nil, 1)
+	root.Record.Version = testVersion
+	root.Record.MailboxIDs = []string{testFolder}
+	root = sealRevision(t, root)
+	move := testRevision(t, "move", []string{root.RKey}, 2)
+	move.Record.MailboxIDs = []string{testFolderB}
+	move = sealRevision(t, move)
+
+	inventory := testInventory(root, move)
+	inventory.folders[testFolder] = verifiedFolderReference{
+		stateDigest: "sha256-" + strings.Repeat("e", 64),
+		tombstone:   true,
+	}
+	inventory.folders[testFolderB] = verifiedFolderReference{
+		stateDigest: "sha256-" + strings.Repeat("f", 64),
+	}
+	inventory.seal = inventory.snapshotSeal()
+
+	state, err := Reduce(testRepoDID, testLogicalID, []StateRevision{root, move}, inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(state.MailboxIDs, []string{testFolderB}) {
+		t.Fatalf("mailboxes = %#v", state.MailboxIDs)
+	}
+}
+
 func TestReduceRevisionsRequiresWireSafeEmptyParentsAndBoundsHistory(t *testing.T) {
 	root := testRevision(t, "initial", nil, 1)
 	root.Record.Version = testVersion
@@ -217,6 +330,13 @@ func TestReduceRevisionsRequiresWireSafeEmptyParentsAndBoundsHistory(t *testing.
 	overflow := make([]StateRevision, maxRevisionCount+1)
 	if _, err := Reduce(testRepoDID, testLogicalID, overflow, VerifiedSnapshot{}); !errors.Is(err, ErrResourceLimit) {
 		t.Fatalf("revision-count limit error = %v", err)
+	}
+	tooHigh := testRevision(t, "too-high", nil, maxPortableRevision+1)
+	tooHigh.Record.Version = testVersion
+	tooHigh.Record.MailboxIDs = []string{testFolder}
+	tooHigh = sealRevision(t, tooHigh)
+	if _, err := Reduce(testRepoDID, testLogicalID, []StateRevision{tooHigh}, testInventory(tooHigh)); !errors.Is(err, ErrInvalidRevision) {
+		t.Fatalf("non-portable revision error = %v", err)
 	}
 }
 
@@ -374,9 +494,12 @@ func testInventory(revisions ...StateRevision) VerifiedSnapshot {
 		claims[claim.RKey] = claim.Record.RevisionRKey
 	}
 	inventory := VerifiedSnapshot{
-		snapshotID: "bafy-synthetic-verified-commit", revisionCount: len(revisions),
-		operationClaims: claims, versions: map[string]struct{}{testVersion: {}},
-		folders: map[string]struct{}{testFolder: {}},
+		snapshotID: "bafy-synthetic-verified-commit", logicalMessageID: testLogicalID,
+		revisionCount: len(revisions), operationClaims: claims,
+		versions: map[string]string{testVersion: testLogicalID},
+		folders: map[string]verifiedFolderReference{
+			testFolder: {stateDigest: "sha256-" + strings.Repeat("d", 64)},
+		},
 	}
 	inventory.seal = inventory.snapshotSeal()
 	return inventory
