@@ -16,9 +16,10 @@ state. Stable UID/UIDVALIDITY migration hints are retained in permissioned
 records so deleting and rebuilding a projection does not unnecessarily reset
 existing IMAP clients.
 
-## Provider-neutral repository contract
+## Legacy v2 provider contract
 
-The lab talks to a provider through five operations:
+The certified HappyView/rsky laboratory path talks to a provider through five
+legacy v2 operations:
 
 1. create or discover an exact mailbox space;
 2. upload one RFC 5322 blob into the authenticated user's repo;
@@ -29,6 +30,12 @@ The lab talks to a provider through five operations:
 Full rebuild requires only authenticated `listRecords` and `getBlob`. Oplog,
 CAR export, and notifications are certified accelerators, not correctness
 requirements.
+
+Official Spaces v3 does not implement this mutable contract. It is a separate,
+append-only protocol with member-authored creates, immutable message records,
+message/folder revision streams, operation claims, and a signed commit/CAR as
+the complete recovery authority. Its client deliberately does not implement
+the legacy repository interface or advertise a v2 authority certificate.
 
 The unmodified pinned rsky epoch does not satisfy operation 3 for records which
 reference blobs. The lab's exact pinned patch verifies/promotes referenced
@@ -55,6 +62,30 @@ the reconstructed message are verified with SHA-256 and bounded at 10 MiB.
 This shim preserves the provider-neutral Comail mailbox model and proves the
 full migration/rebuild path today. It is not a proposal to standardize chunked
 email records; a ratified private-blob facility can replace only this adapter.
+
+### Official Spaces v3 transport
+
+`internal/providers/officialspaces` is a production-dark transport pinned to
+the exact reviewed alpha epoch. The writer lane asks an exact-target broker for
+one scoped steady member OAuth capability per operation, closes it afterward,
+and exposes only RFC 5322 blob upload plus atomic create batches. Every batch
+is forced to `validate=true`; only the five v3
+append-only mailbox collections are admitted, and every result must be a
+member-authored create with `validationStatus=valid`, the exact record URI, and
+a valid DAG-CBOR CID. Blob receipts and downloads are bound to their raw
+SHA-256 CID.
+
+The reader lane acquires a fresh delegated DPoP space credential for each
+read/recovery operation and destroys it afterward. Record and blob listings
+are bounded diagnostic surfaces only: pagination is not commit-pinned and can
+never construct authority. The CAR stream similarly returns no verified
+capability. A future signed-commit/CAR verifier is the sole component allowed
+to construct the opaque v3 snapshots consumed by the reducers.
+
+This transport is not registered in `cmd/comail-space-host`, has no public HTTP
+route, certificate, relay binding, worker, or activation path, and cannot make
+hosted alpha writes while the PDS rejects the unpublished `email.atmos.*`
+schemas under mandatory validation.
 
 ## Data model
 
@@ -150,7 +181,19 @@ URL on a second exact IPv4 loopback port (cookies are host-scoped, not
 port-scoped), then stored create-only with mode 0600. Provider requests disable
 proxies and redirects and refuse any non-loopback destination.
 
-## Production service-grant boundary
+## Official v3 production credential boundary
+
+Official writes are authored by the member and the alpha accepts member OAuth,
+not a delegated space credential, for blob upload and `applyWrites`. The lab's
+encrypted steady browser session can exercise that path interactively, but it
+is not an unattended SMTP credential design. Production needs a separately
+reviewed exact-target broker that retains encrypted sessions outside the relay
+and adapter, exposes only operation callbacks, fails closed on scope drift or
+expiry, and requires interactive reauthorization when the SDK cannot prove a
+refresh preserved the exact grant. Until that lifecycle and its revocation
+controls are certified, official v3 prepare and delivery remain unavailable.
+
+## Legacy compatibility service-grant boundary
 
 The production adapter does not retain the lab browser OAuth session. The
 space owner grants the published adapter `did:web` identity write membership
