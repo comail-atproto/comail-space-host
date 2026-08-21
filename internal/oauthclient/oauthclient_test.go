@@ -39,30 +39,25 @@ func TestMailboxScopesAreExactAndAppendOnly(t *testing.T) {
 }
 
 func TestProvisioningScopesAreSeparateAndCreateOnly(t *testing.T) {
-	scopes, err := ProvisioningScopes(testMemberDID)
+	scopes, err := ProvisioningScopes(testMemberDID, "primary")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
 		"atproto",
-		"space:email.atmos.mailbox?authority=did:plc:rfwhywgeym2ek7ioeyxkvsn6&skey=*" +
-			"&collection=email.atmos.folderOperation" +
-			"&collection=email.atmos.folderRevision" +
-			"&collection=email.atmos.message" +
-			"&collection=email.atmos.messageStateOperation" +
-			"&collection=email.atmos.messageStateRevision" +
+		"space:email.atmos.mailbox?authority=did:plc:rfwhywgeym2ek7ioeyxkvsn6&skey=primary" +
 			"&action=read_self&manage=create",
 	}
 	if !reflect.DeepEqual(scopes, want) {
 		t.Fatalf("scopes = %#v, want %#v", scopes, want)
 	}
-	if err := ValidateProvisioningGrant([]string{want[1], want[0]}, testMemberDID); err != nil {
+	if err := ValidateProvisioningGrant([]string{want[1], want[0]}, testMemberDID, "primary"); err != nil {
 		t.Fatalf("exact provisioning grant rejected: %v", err)
 	}
 }
 
 func TestValidateProvisioningGrantRejectsSteadyOrWidenedGrant(t *testing.T) {
-	provisioning, err := ProvisioningScopes(testMemberDID)
+	provisioning, err := ProvisioningScopes(testMemberDID, "primary")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,11 +70,13 @@ func TestValidateProvisioningGrantRejectsSteadyOrWidenedGrant(t *testing.T) {
 		{name: "record create", scopes: replaceScope(provisioning, "action=read_self", "action=read_self&action=create")},
 		{name: "manage update", scopes: replaceScope(provisioning, "manage=create", "manage=create&manage=update")},
 		{name: "wildcard authority", scopes: replaceScope(provisioning, "authority="+testMemberDID, "authority=*")},
-		{name: "concrete key", scopes: replaceScope(provisioning, "skey=*", "skey=primary")},
+		{name: "wildcard key", scopes: replaceScope(provisioning, "skey=primary", "skey=*")},
+		{name: "other key", scopes: replaceScope(provisioning, "skey=primary", "skey=secondary")},
+		{name: "irrelevant collections", scopes: replaceScope(provisioning, "&action=read_self", "&collection=email.atmos.message&action=read_self")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := ValidateProvisioningGrant(test.scopes, testMemberDID); err == nil {
+			if err := ValidateProvisioningGrant(test.scopes, testMemberDID, "primary"); err == nil {
 				t.Fatal("expected provisioning least-privilege validation error")
 			}
 		})

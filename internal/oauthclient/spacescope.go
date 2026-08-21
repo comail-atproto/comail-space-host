@@ -53,18 +53,17 @@ func MailboxScopes(authorityDID, spaceKey string) ([]string, error) {
 // ProvisioningScopes returns a separate one-time grant used only to create a
 // predetermined mailbox key. Callers must revoke this session after verifying
 // the new declaration and reauthorize with MailboxScopes.
-func ProvisioningScopes(authorityDID string) ([]string, error) {
-	did, err := syntax.ParseDID(authorityDID)
+func ProvisioningScopes(authorityDID, spaceKey string) ([]string, error) {
+	did, rkey, err := parseSteadyTarget(authorityDID, spaceKey)
 	if err != nil {
-		return nil, fmt.Errorf("oauthclient: parse exact DID: %w", err)
+		return nil, err
 	}
 	grant := spaceGrant{
-		spaceType:  mailbox.MailboxSpaceType,
-		authority:  did.String(),
-		skey:       "*",
-		collection: appendOnlyMailboxCollections,
-		action:     []string{"read_self"},
-		manage:     []string{"create"},
+		spaceType: mailbox.MailboxSpaceType,
+		authority: did.String(),
+		skey:      rkey.String(),
+		action:    []string{"read_self"},
+		manage:    []string{"create"},
 	}
 	return []string{"atproto", formatSpaceGrant(grant)}, nil
 }
@@ -111,12 +110,12 @@ func ValidateSteadyGrant(granted []string, authorityDID, spaceKey string) error 
 	return nil
 }
 
-// ValidateProvisioningGrant ensures the wildcard key exists only in the
-// isolated one-time session and carries no record or blob write capability.
-func ValidateProvisioningGrant(granted []string, authorityDID string) error {
-	did, err := syntax.ParseDID(authorityDID)
+// ValidateProvisioningGrant ensures the isolated one-time session can create
+// and verify only the predetermined mailbox key, with no record/blob writes.
+func ValidateProvisioningGrant(granted []string, authorityDID, spaceKey string) error {
+	did, rkey, err := parseSteadyTarget(authorityDID, spaceKey)
 	if err != nil {
-		return fmt.Errorf("oauthclient: parse exact DID: %w", err)
+		return err
 	}
 	if len(granted) != 2 {
 		return errors.New("oauthclient: provisioning grant must contain exactly two scopes")
@@ -132,11 +131,11 @@ func ValidateProvisioningGrant(granted []string, authorityDID string) error {
 			if err != nil {
 				return err
 			}
-			if parsed.spaceType != mailbox.MailboxSpaceType || parsed.authority != did.String() || parsed.skey != "*" {
+			if parsed.spaceType != mailbox.MailboxSpaceType || parsed.authority != did.String() || parsed.skey != rkey.String() {
 				return errors.New("oauthclient: provisioning space grant target mismatch")
 			}
-			if !sameStringSet(parsed.collection, appendOnlyMailboxCollections) {
-				return errors.New("oauthclient: provisioning space grant collection mismatch")
+			if len(parsed.collection) != 0 {
+				return errors.New("oauthclient: provisioning grant carried irrelevant record collections")
 			}
 			if !sameStringSet(parsed.action, []string{"read_self"}) || !sameStringSet(parsed.manage, []string{"create"}) {
 				return errors.New("oauthclient: provisioning grant is missing or widens create-only management")
