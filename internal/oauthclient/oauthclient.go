@@ -170,7 +170,51 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*oauth.ClientSe
 	return m.resumeSession(ctx, sessionID)
 }
 
+// RevokeAndDelete resumes and revalidates one exact steady session, confirms
+// remote revocation of both OAuth tokens, and only then removes the encrypted
+// local session. A failed remote revocation deliberately retains the encrypted
+// session so an operator can retry instead of losing the only revocation
+// handle while a token may still be valid.
+func (m *Manager) RevokeAndDelete(ctx context.Context, sessionID string) error {
+	if m == nil || m.profile != grantSteady {
+		return errors.New("oauthclient: steady OAuth manager is required")
+	}
+	session, err := m.loadValidatedSteadySession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if session.Data == nil || session.Data.AuthServerRevocationEndpoint == "" {
+		return errors.New("oauthclient: remote OAuth revocation unavailable; encrypted session retained for retry")
+	}
+	revokeCtx, revokeCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = session.RevokeSession(revokeCtx)
+	revokeCancel()
+	if err != nil {
+		return fmt.Errorf("oauthclient: remote OAuth revocation unconfirmed; encrypted session retained for retry: %w", err)
+	}
+	deleteCtx, deleteCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = m.app.Store.DeleteSession(deleteCtx, m.did, sessionID)
+	deleteCancel()
+	if err != nil {
+		return fmt.Errorf("oauthclient: remote OAuth revocation confirmed but encrypted local session deletion failed: %w", err)
+	}
+	return nil
+}
+
 func (m *Manager) resumeSession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
+	session, err := m.loadValidatedSteadySession(ctx, sessionID)
+	if err == nil {
+		return session, nil
+	}
+	if session == nil {
+		return nil, err
+	}
+	return nil, m.rejectSession(ctx, m.did, sessionID, session, err)
+}
+
+// loadValidatedSteadySession performs no cleanup. Explicit revocation uses it
+// so every target/grant/load failure retains the encrypted retry handle.
+func (m *Manager) loadValidatedSteadySession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
 	if sessionID == "" {
 		return nil, errors.New("oauthclient: session ID is required")
 	}
@@ -179,12 +223,10 @@ func (m *Manager) resumeSession(ctx context.Context, sessionID string) (*oauth.C
 		return nil, fmt.Errorf("oauthclient: resume session: %w", err)
 	}
 	if session.Data.AccountDID != m.did || !sameOriginString(session.Data.HostURL, m.origin) {
-		rejection := fmt.Errorf("%w: resumed OAuth session target mismatch", repository.ErrTarget)
-		return nil, m.rejectSession(ctx, m.did, sessionID, session, rejection)
+		return session, fmt.Errorf("%w: resumed OAuth session target mismatch", repository.ErrTarget)
 	}
 	if err := m.validateGrant(session.Data.Scopes); err != nil {
-		rejection := fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
-		return nil, m.rejectSession(ctx, m.did, sessionID, session, rejection)
+		return session, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
 	}
 	return session, nil
 }
