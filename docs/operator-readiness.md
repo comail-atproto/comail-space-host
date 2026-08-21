@@ -2,7 +2,7 @@
 
 Observed 2026-08-16; no production state was changed.
 
-## Official Spaces alpha compatibility (2026-08-20)
+## Official Spaces alpha compatibility (2026-08-21)
 
 The disposable proof in `scripts/test-official-spaces-alpha.sh` executes the
 exact `linux/amd64` reference-PDS image recorded in
@@ -35,12 +35,20 @@ result is recorded in `providers/official-spaces-alpha-assessment.json` with
 `compareAndSwap=false`, `authorityCertified=false`, and `passed=false`.
 Client-side read/check/write is not a substitute for provider-enforced CAS.
 
-The reusable production adapter also still needs the narrow OAuth grant and
-writer-repo lifecycle; the disposable proof currently uses only a synthetic
-account credential to exercise the official delegation and DPoP protocol.
-Real member mail therefore remains on unchanged Stalwart authority. The
-official alpha must not be wired into `cmd/comail-space-host`, admitted by the
-authority certificate loader, or used with sensitive data.
+The production-dark official transport is now implemented separately from the
+legacy mutable provider interface. It acquires only a per-operation, exact-target
+narrow steady member OAuth capability for blob/create requests, forces
+`validate=true`, admits only the five v3 append-only collections, checks exact
+member-authored receipts, and uses fresh delegated DPoP credentials for
+bounded reads and raw CAR recovery.
+It is not registered in the service and returns no certified snapshot or
+authority capability.
+
+The remaining credential gap is an unattended, exact-target OAuth broker and
+reauthorization lifecycle; the adapter may not persist the lab browser
+session. Real member mail therefore remains on unchanged Stalwart authority.
+The official alpha must not be wired into `cmd/comail-space-host`, admitted by
+the authority certificate loader, or used with sensitive data.
 
 ## Current bindings
 
