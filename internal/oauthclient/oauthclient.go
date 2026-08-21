@@ -16,9 +16,12 @@ import (
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
+
+var ErrReauthorizationRequired = errors.New("oauthclient: interactive reauthorization required")
+
+const maxDPoPNonceBytes = 1024
 
 type Config struct {
 	DID         string
@@ -30,24 +33,12 @@ type Config struct {
 }
 
 type Manager struct {
-	app    *oauth.ClientApp
-	did    syntax.DID
-	handle syntax.Handle
-	origin string
-	scopes []string
-	client *http.Client
-}
-
-func MailboxScopes(spaceKey string) ([]string, error) {
-	if spaceKey == "" || strings.ContainsAny(spaceKey, "&=?# /+") {
-		return nil, errors.New("oauthclient: safe exact space key is required")
-	}
-	spaceScope := "space:" + mailbox.MailboxSpaceType + "?authority=self&skey=" + url.QueryEscape(spaceKey) +
-		"&collection=" + mailbox.MessageCollection +
-		"&collection=" + mailbox.MessageStateCollection +
-		"&collection=" + mailbox.FolderCollection +
-		"&action=read&action=create&action=update&action=delete&manage=create&manage=update&manage=delete"
-	return []string{"atproto", "blob:" + mailbox.MessageMIMEType, spaceScope}, nil
+	app      *oauth.ClientApp
+	did      syntax.DID
+	handle   syntax.Handle
+	origin   string
+	spaceKey string
+	client   *http.Client
 }
 
 func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
@@ -70,7 +61,7 @@ func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	scopes, err := MailboxScopes(cfg.SpaceKey)
+	scopes, err := MailboxScopes(did.String(), cfg.SpaceKey)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +77,7 @@ func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
 		},
 	})
 	app.Dir = directory
-	return &Manager{app: app, did: did, handle: handle, origin: origin, scopes: scopes, client: client}, nil
+	return &Manager{app: app, did: did, handle: handle, origin: origin, spaceKey: cfg.SpaceKey, client: client}, nil
 }
 
 func (m *Manager) Start(ctx context.Context) (string, error) {
@@ -107,13 +98,12 @@ func (m *Manager) Finish(ctx context.Context, values url.Values) (*oauth.ClientS
 		return nil, fmt.Errorf("oauthclient: process callback: %w", err)
 	}
 	if data.AccountDID != m.did || !sameOriginString(data.HostURL, m.origin) {
-		return nil, fmt.Errorf("%w: OAuth subject or resource server mismatch", repository.ErrTarget)
+		rejection := fmt.Errorf("%w: OAuth subject or resource server mismatch", repository.ErrTarget)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, nil, rejection)
 	}
-	for _, required := range m.scopes {
-		if !contains(data.Scopes, required) {
-			_ = m.app.Store.DeleteSession(ctx, data.AccountDID, data.SessionID)
-			return nil, fmt.Errorf("%w: OAuth grant omitted a required scope", repository.ErrUnauthorized)
-		}
+	if err := ValidateSteadyGrant(data.Scopes, m.did.String(), m.spaceKey); err != nil {
+		rejection := fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, nil, rejection)
 	}
 	return m.Resume(ctx, data.SessionID)
 }
@@ -127,46 +117,141 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*oauth.ClientSe
 		return nil, fmt.Errorf("oauthclient: resume session: %w", err)
 	}
 	if session.Data.AccountDID != m.did || !sameOriginString(session.Data.HostURL, m.origin) {
-		return nil, fmt.Errorf("%w: resumed OAuth session target mismatch", repository.ErrTarget)
+		rejection := fmt.Errorf("%w: resumed OAuth session target mismatch", repository.ErrTarget)
+		return nil, m.rejectSession(ctx, m.did, sessionID, session, rejection)
+	}
+	if err := ValidateSteadyGrant(session.Data.Scopes, m.did.String(), m.spaceKey); err != nil {
+		rejection := fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+		return nil, m.rejectSession(ctx, m.did, sessionID, session, rejection)
 	}
 	return session, nil
+}
+
+func (m *Manager) rejectSession(ctx context.Context, storageDID syntax.DID, sessionID string, session *oauth.ClientSession, rejection error) error {
+	var resumeErr error
+	if session == nil {
+		session, resumeErr = m.app.ResumeSession(ctx, storageDID, sessionID)
+	}
+	var revokeErr error
+	if session == nil {
+		revokeErr = errors.New("oauthclient: could not load rejected session for remote revocation")
+	} else if session.Data.AuthServerRevocationEndpoint == "" {
+		revokeErr = errors.New("oauthclient: OAuth server supplied no revocation endpoint for rejected session")
+	} else if err := session.RevokeSession(ctx); err != nil {
+		revokeErr = fmt.Errorf("oauthclient: revoke rejected OAuth session: %w", err)
+	}
+	deleteErr := m.app.Store.DeleteSession(ctx, storageDID, sessionID)
+	if deleteErr != nil {
+		deleteErr = fmt.Errorf("oauthclient: delete rejected OAuth session: %w", deleteErr)
+	}
+	if resumeErr != nil {
+		resumeErr = fmt.Errorf("oauthclient: resume rejected OAuth session for cleanup: %w", resumeErr)
+	}
+	return errors.Join(rejection, resumeErr, revokeErr, deleteErr)
 }
 
 func (m *Manager) Doer(session *oauth.ClientSession) (*SessionDoer, error) {
 	if session == nil || session.Data == nil || session.Data.AccountDID != m.did || !sameOriginString(session.Data.HostURL, m.origin) {
 		return nil, repository.ErrTarget
 	}
-	return &SessionDoer{session: session, client: m.client, origin: m.origin}, nil
+	if err := ValidateSteadyGrant(session.Data.Scopes, m.did.String(), m.spaceKey); err != nil {
+		return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+	}
+	return &SessionDoer{session: session, client: m.client, origin: m.origin, did: m.did.String(), spaceKey: m.spaceKey}, nil
 }
 
 type SessionDoer struct {
-	mu      sync.Mutex
-	session *oauth.ClientSession
-	client  *http.Client
-	origin  string
+	mu       sync.Mutex
+	session  *oauth.ClientSession
+	client   *http.Client
+	origin   string
+	did      string
+	spaceKey string
 }
 
 func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string) (*http.Response, error) {
 	if req == nil || req.URL == nil || !sameOrigin(req.URL, d.origin) {
 		return nil, repository.ErrTarget
 	}
-	nsid, err := syntax.ParseNSID(endpoint)
-	if err != nil {
+	if _, err := syntax.ParseNSID(endpoint); err != nil {
 		return nil, fmt.Errorf("oauthclient: parse endpoint: %w", err)
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	resp, err := d.session.DoWithAuth(d.client, req.WithContext(ctx), nsid)
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil || resp.Request == nil || !sameOrigin(resp.Request.URL, d.origin) {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
+	if d.session == nil || d.session.Data == nil {
 		return nil, repository.ErrTarget
 	}
-	return resp, nil
+	if err := ValidateSteadyGrant(d.session.Data.Scopes, d.did, d.spaceKey); err != nil {
+		return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+	}
+	accessToken, originalNonce := d.session.GetHostAccessData()
+	if accessToken == "" {
+		return nil, ErrReauthorizationRequired
+	}
+	dpopURL := *req.URL
+	dpopURL.RawQuery = ""
+	dpopURL.ForceQuery = false
+	dpopURL.Fragment = ""
+	dpopURL.RawFragment = ""
+
+	for attempt := range 2 {
+		currentToken, currentNonce := d.session.GetHostAccessData()
+		if currentToken != accessToken {
+			return nil, ErrReauthorizationRequired
+		}
+		proof, err := d.session.NewHostDPoP(req.Method, dpopURL.String())
+		if err != nil {
+			return nil, fmt.Errorf("oauthclient: create host DPoP proof: %w", err)
+		}
+		if currentToken, _ = d.session.GetHostAccessData(); currentToken != accessToken {
+			return nil, ErrReauthorizationRequired
+		}
+		attemptRequest := req.Clone(ctx)
+		attemptRequest.Header = req.Header.Clone()
+		if attempt > 0 && req.Body != nil {
+			if req.GetBody == nil {
+				return nil, errors.New("oauthclient: request body cannot be replayed for a DPoP nonce")
+			}
+			attemptRequest.Body, err = req.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("oauthclient: replay request body: %w", err)
+			}
+		}
+		attemptRequest.Header.Set("Authorization", "DPoP "+accessToken)
+		attemptRequest.Header.Set("DPoP", proof)
+		resp, err := d.client.Do(attemptRequest)
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil || resp.Request == nil || !sameOrigin(resp.Request.URL, d.origin) {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, repository.ErrTarget
+		}
+		if err := ValidateSteadyGrant(d.session.Data.Scopes, d.did, d.spaceKey); err != nil {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("WWW-Authenticate") == "" {
+			return resp, nil
+		}
+		authHeader := resp.Header.Get("WWW-Authenticate")
+		if strings.Contains(authHeader, `error="invalid_token"`) {
+			_ = resp.Body.Close()
+			return nil, ErrReauthorizationRequired
+		}
+		newNonce := resp.Header.Get("DPoP-Nonce")
+		if !strings.Contains(authHeader, `error="use_dpop_nonce"`) || newNonce == "" {
+			return resp, nil
+		}
+		_ = resp.Body.Close()
+		if attempt > 0 || newNonce == currentNonce || newNonce == originalNonce || len(newNonce) > maxDPoPNonceBytes {
+			return nil, errors.New("oauthclient: invalid or repeated PDS DPoP nonce")
+		}
+		d.session.UpdateHostDPoPNonce(ctx, newNonce)
+	}
+	return nil, errors.New("oauthclient: exhausted PDS DPoP nonce retry")
 }
 
 func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
@@ -266,13 +351,4 @@ func effectivePort(u *url.URL) string {
 		return "80"
 	}
 	return ""
-}
-
-func contains(values []string, required string) bool {
-	for _, value := range values {
-		if value == required {
-			return true
-		}
-	}
-	return false
 }
