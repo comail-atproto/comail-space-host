@@ -18,8 +18,11 @@ logs, and unauthenticated clients must not.
 
 - Exact DID/space/repo/provider binding; caller input never selects a target at
   SMTP time.
-- Space-scoped OAuth grants, durable DPoP keys, serialized refresh rotation,
-  proactive refresh, and explicit reconnect/revocation behavior.
+- Space-scoped OAuth grants, durable DPoP keys, serialized token updates, and
+  explicit reconnect/revocation behavior. A refreshed token cannot be used
+  until its returned scope is persisted and revalidated; the pinned OAuth
+  client does not expose that proof, so an expired token currently requires
+  interactive reauthorization instead of transparent refresh.
 - Authenticated requests never follow redirects and use bounded bodies/timeouts.
 - The operator-selected PDS origin is clean and exact; HTTPS DNS is resolved
   once, non-public answers and proxies are rejected, and TLS remains bound to
