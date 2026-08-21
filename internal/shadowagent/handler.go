@@ -661,6 +661,8 @@ func (h *Handler) ensureFolder(ctx context.Context, name string) error {
 		role = "trash"
 	case "archive":
 		role = "archive"
+	case "important":
+		role = "important"
 	}
 	folder := mailbox.NewFolder(name, role, mailbox.StableUIDValidity(h.did, name))
 	_, err = h.repo.ApplyWrites(ctx, h.target, []repository.Write{{Action: repository.Create, Collection: mailbox.FolderCollection, RKey: folder.RKey, Value: folder.Record}})
@@ -791,7 +793,7 @@ func (h *Handler) inventoryMessages(ctx context.Context) ([]messageSnapshot, err
 
 func portableFolderName(folder mailbox.FolderRecord) (string, bool) {
 	switch folder.Role {
-	case "inbox", "junk", "sent", "drafts", "trash", "archive":
+	case "inbox", "junk", "sent", "drafts", "trash", "archive", "important":
 		return folder.Role, true
 	case "":
 		return folder.Name, validPortableMailbox(folder.Name)

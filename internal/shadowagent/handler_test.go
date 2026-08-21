@@ -397,6 +397,7 @@ func TestHandlerInventoryNormalizesExistingStandardFolderNamesToRoles(t *testing
 		{name: "Archive", role: "archive"},
 		{name: "Drafts", role: "drafts"},
 		{name: "Sent", role: "sent"},
+		{name: "Important", role: "important"},
 	}
 	for index, folder := range roles {
 		raw := []byte(fmt.Sprintf("Message-ID: <legacy-role-%d@test>\r\nSubject: legacy role\r\n\r\nbody", index))
