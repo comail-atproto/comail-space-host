@@ -56,6 +56,14 @@ yet projection-ready: the full CAR does not carry referenced RFC 5322 blob
 bytes, and every selected blob must be fetched from the exact source and pass
 byte/hash validation before any rebuild or activation gate can pass.
 
+The production-dark content gate now performs that fetch for every immutable
+version without accepting a source snapshot, CID list, path, or byte input
+from its caller. It deduplicates identical CIDs, proves the repository did not
+move before authentication or change across the blob batch, and returns only
+a closeable sealed capability after all bytes pass. This first bounded form
+fails closed above 64 MiB of unique blobs and is not registered with a worker
+or projector; it is conformance/recovery plumbing, not rollout admission.
+
 The remaining credential gap is an unattended, exact-target OAuth broker and
 reauthorization lifecycle; the adapter may not persist the lab browser
 session. Real member mail therefore remains on unchanged Stalwart authority.

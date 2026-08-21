@@ -110,6 +110,7 @@ type SourceAuthenticatedRepository struct {
 	snapshotID string
 	commitCID  string
 	indexCID   string
+	repoHash   []byte
 	records    []SourceRecord
 	seal       [sha256.Size]byte
 }
@@ -174,7 +175,7 @@ func (r *SourceAuthenticatedRepository) GoString() string { return r.String() }
 
 func (r *SourceAuthenticatedRepository) valid() bool {
 	return r != nil && r.snapshotID != "" && r.commitCID != "" && r.indexCID != "" &&
-		r.target.Epoch == PinnedEpoch && r.seal == r.snapshotSeal()
+		len(r.repoHash) == sha256.Size && r.target.Epoch == PinnedEpoch && r.seal == r.snapshotSeal()
 }
 
 func (r *SourceAuthenticatedRepository) snapshotSeal() [sha256.Size]byte {
@@ -188,6 +189,10 @@ func (r *SourceAuthenticatedRepository) snapshotSeal() [sha256.Size]byte {
 	writeSnapshotField(hash, r.snapshotID)
 	writeSnapshotField(hash, r.commitCID)
 	writeSnapshotField(hash, r.indexCID)
+	var repoHashSize [8]byte
+	binary.BigEndian.PutUint64(repoHashSize[:], uint64(len(r.repoHash)))
+	_, _ = hash.Write(repoHashSize[:])
+	_, _ = hash.Write(r.repoHash)
 	var count [8]byte
 	binary.BigEndian.PutUint64(count[:], uint64(len(r.records)))
 	_, _ = hash.Write(count[:])
@@ -229,20 +234,11 @@ func (c *Client) ReadSourceAuthenticatedRepository(ctx context.Context) (*Source
 	if c.repoKeys == nil {
 		return nil, fmt.Errorf("%w: repo signing-key resolver is unavailable", ErrSnapshotVerification)
 	}
-	repoDID, err := syntax.ParseDID(c.target.RepoDID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: invalid repo DID", ErrSnapshotVerification)
-	}
-	repoHost, _, err := c.repoKeys.ResolveRepoSource(ctx, repoDID, true)
-	if err != nil {
-		return nil, fmt.Errorf("%w: resolve repo PDS", ErrSnapshotVerification)
-	}
-	cleanRepoHost, err := cleanOrigin(repoHost, true)
-	if err != nil || cleanRepoHost != c.origin {
-		return nil, repository.ErrTarget
+	if err := c.validateRepoSourceOrigin(ctx); err != nil {
+		return nil, err
 	}
 	var result *SourceAuthenticatedRepository
-	err = c.withReader(ctx, func(credential ScopedDoer) error {
+	err := c.withReader(ctx, func(credential ScopedDoer) error {
 		before, err := c.readSourceCommit(ctx, credential)
 		if err != nil {
 			return err
@@ -280,7 +276,8 @@ func (c *Client) ReadSourceAuthenticatedRepository(ctx context.Context) (*Source
 		}
 		result = &SourceAuthenticatedRepository{
 			target: c.target, revision: carSnapshot.commit.Revision, snapshotID: snapshotID,
-			commitCID: carSnapshot.commitCID.String(), indexCID: carSnapshot.indexCID.String(), records: records,
+			commitCID: carSnapshot.commitCID.String(), indexCID: carSnapshot.indexCID.String(),
+			repoHash: append([]byte(nil), carSnapshot.commit.Hash...), records: records,
 		}
 		result.seal = result.snapshotSeal()
 		return nil
@@ -289,6 +286,30 @@ func (c *Client) ReadSourceAuthenticatedRepository(ctx context.Context) (*Source
 		return nil, normalizeSnapshotError(err)
 	}
 	return result, nil
+}
+
+func (r *SourceAuthenticatedRepository) matchesCommit(commit signedRepoCommit) bool {
+	return r != nil && commit.Version == commitVersion && commit.Revision == r.revision &&
+		len(r.repoHash) == sha256.Size && hmac.Equal(commit.Hash, r.repoHash)
+}
+
+func (c *Client) validateRepoSourceOrigin(ctx context.Context) error {
+	if c.repoKeys == nil {
+		return fmt.Errorf("%w: repo signing-key resolver is unavailable", ErrSnapshotVerification)
+	}
+	repoDID, err := syntax.ParseDID(c.target.RepoDID)
+	if err != nil {
+		return fmt.Errorf("%w: invalid repo DID", ErrSnapshotVerification)
+	}
+	repoHost, _, err := c.repoKeys.ResolveRepoSource(ctx, repoDID, true)
+	if err != nil {
+		return fmt.Errorf("%w: resolve repo PDS", ErrSnapshotVerification)
+	}
+	cleanRepoHost, err := cleanOrigin(repoHost, true)
+	if err != nil || cleanRepoHost != c.origin {
+		return repository.ErrTarget
+	}
+	return nil
 }
 
 func (c *Client) readSourceCommit(ctx context.Context, credential ScopedDoer) (signedRepoCommit, error) {

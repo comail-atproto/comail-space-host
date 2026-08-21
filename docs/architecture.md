@@ -106,6 +106,17 @@ selected message blob must still be fetched from the same exact target and
 pass `mailbox.ValidateStoredMessage` before projection or recovery can claim
 message-content integrity.
 
+The byte-complete recovery constructor takes only the pinned official client;
+it performs a fresh source read and reduction internally, derives every
+immutable message-version CID, and downloads each unique blob under one scoped
+credential. Fresh signed latest-commit reads before and after the blob batch
+must still equal the source revision and LtHash, and the member DID must still
+resolve to the exact PDS origin before authentication. Every referencing
+message record is byte-validated. The production-dark in-memory capability is
+closeable, redacted, sealed, and capped at 64 MiB of unique message bytes;
+larger recovery requires a separately reviewed encrypted streaming/spooling
+design before activation.
+
 This transport is not registered in `cmd/comail-space-host`, has no public HTTP
 route, certificate, relay binding, worker, or activation path, and cannot make
 hosted alpha writes while the PDS rejects the unpublished `email.atmos.*`
