@@ -59,11 +59,12 @@ func ProvisioningScopes(authorityDID, spaceKey string) ([]string, error) {
 		return nil, err
 	}
 	grant := spaceGrant{
-		spaceType: mailbox.MailboxSpaceType,
-		authority: did.String(),
-		skey:      rkey.String(),
-		action:    []string{"read_self"},
-		manage:    []string{"create"},
+		spaceType:  mailbox.MailboxSpaceType,
+		authority:  did.String(),
+		skey:       rkey.String(),
+		collection: appendOnlyMailboxCollections,
+		action:     []string{"read_self"},
+		manage:     []string{"create"},
 	}
 	return []string{"atproto", formatSpaceGrant(grant)}, nil
 }
@@ -134,8 +135,8 @@ func ValidateProvisioningGrant(granted []string, authorityDID, spaceKey string) 
 			if parsed.spaceType != mailbox.MailboxSpaceType || parsed.authority != did.String() || parsed.skey != rkey.String() {
 				return errors.New("oauthclient: provisioning space grant target mismatch")
 			}
-			if len(parsed.collection) != 0 {
-				return errors.New("oauthclient: provisioning grant carried irrelevant record collections")
+			if !sameStringSet(parsed.collection, appendOnlyMailboxCollections) {
+				return errors.New("oauthclient: provisioning grant collection mismatch")
 			}
 			if !sameStringSet(parsed.action, []string{"read_self"}) || !sameStringSet(parsed.manage, []string{"create"}) {
 				return errors.New("oauthclient: provisioning grant is missing or widens create-only management")
