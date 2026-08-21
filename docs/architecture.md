@@ -128,8 +128,8 @@ yet been rebuilt and queried through JMAP/IMAP.
 
 This transport is not registered in `cmd/comail-space-host`, has no public HTTP
 route, certificate, relay binding, worker, or activation path, and cannot make
-hosted alpha writes while the PDS rejects the unpublished `email.atmos.*`
-schemas under mandatory validation.
+hosted alpha writes until that PDS deploys third-party Lexicon resolution and
+accepts the byte-pinned `email.atmos.*` alpha schemas under mandatory validation.
 
 ## Data model
 

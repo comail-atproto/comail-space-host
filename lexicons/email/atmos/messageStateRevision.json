@@ -1,11 +1,10 @@
 {
   "lexicon": 1,
   "id": "email.atmos.messageStateRevision",
-  "draft": true,
   "defs": {
     "main": {
       "type": "record",
-      "description": "DRAFT — NOT YET PUBLISHED. Immutable create-only causal revision for one logical Comail message. Writers reference every observed head and atomically create a deterministic email.atmos.messageStateOperation claim. Reducers validate a commit-bound complete graph, resolve independent fields by revision height then unsigned UTF-8 operation-ID order, and treat tombstone as irreversible.",
+      "description": "ALPHA. Immutable create-only causal revision for one logical Comail message. Writers reference every observed head and atomically create a deterministic email.atmos.messageStateOperation claim. Reducers validate a commit-bound complete graph, resolve independent fields by revision height then unsigned UTF-8 operation-ID order, and treat tombstone as irreversible.",
       "key": "any",
       "record": {
         "type": "object",

@@ -1,11 +1,10 @@
 {
   "lexicon": 1,
   "id": "email.atmos.messageStateOperation",
-  "draft": true,
   "defs": {
     "main": {
       "type": "record",
-      "description": "DRAFT — NOT YET PUBLISHED. Immutable operation claim created atomically with one message-state revision. Its deterministic key is scoped to the author repository, logical message, and operation ID, so a retry with changed payload collides instead of poisoning the revision graph.",
+      "description": "ALPHA. Immutable operation claim created atomically with one message-state revision. Its deterministic key is scoped to the author repository, logical message, and operation ID, so a retry with changed payload collides instead of poisoning the revision graph.",
       "key": "any",
       "record": {
         "type": "object",

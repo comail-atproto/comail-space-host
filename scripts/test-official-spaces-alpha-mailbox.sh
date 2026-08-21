@@ -87,11 +87,11 @@ for pinned_file in \
 done
 computed_bundle_sha256="$({
   printf '%s\n' \
-    'email.atmos.message=0711f09f63e3655eeefd877889cef572d4a23928a679d32abf86f9d585ceecc1' \
-    'email.atmos.messageStateRevision=1f23c818f896a47eac101f8e283ccb6ceb3f9dd382e205326e42daaf0bdee0a7' \
-    'email.atmos.messageStateOperation=e0122e8b316f2c4492a5afb9df614fffa07d44893b4a9a43e411c5427c11b51c' \
-    'email.atmos.folderRevision=61cd01cdb386a951912498fbf87f83092bf4de9de971d1b09ea9533019d33e84' \
-    'email.atmos.folderOperation=398c98a7db2b6d4e0d1294d2009dbdda51b31d270a9d9dfc03dccd0a1bc5dffc'
+    'email.atmos.message=dfec09b66d2b64b856bf24f9165f4f1a3b0b6912589f955e5266d2ad632eafbd' \
+    'email.atmos.messageStateRevision=24e5e48598bd32cba97240b19c09c3576a43a62a13592f77ada55df06ebe17f8' \
+    'email.atmos.messageStateOperation=0c0d12ec2f818b40a85ebecf14af1fa1fc4a44e260f3ba490cb996639429326b' \
+    'email.atmos.folderRevision=7b04352914ab168d69f54b0656b741e50c07287f3d9c3bac20a911407afbd136' \
+    'email.atmos.folderOperation=7c2e1a4c144c1c114b627c815d88cf95306240561a748bb5b0aa589582b8986b'
 } | shasum -a 256 | awk '{print $1}')"
 if [[ "${computed_bundle_sha256}" != "${schema_bundle_sha256}" ]]; then
   printf 'schema bundle hash mismatch\n' >&2
@@ -107,7 +107,14 @@ esac
 runtime_dir="$(mktemp -d /tmp/comail-official-mailbox.XXXXXX)"
 run_id="${runtime_dir##*.}"
 proof_docker_config="${runtime_dir}/docker-config"
-mkdir -p "${proof_docker_config}"
+proof_container_inputs="${runtime_dir}/container-inputs"
+mkdir -p "${proof_docker_config}" "${proof_container_inputs}"
+cp "${repo_root}/scripts/testdata/official-spaces-alpha-plc-mock.mjs" \
+  "${proof_container_inputs}/plc-mock.mjs"
+cp "${repo_root}/scripts/testdata/official-spaces-alpha-run-with-plc.sh" \
+  "${proof_container_inputs}/run-with-plc.sh"
+cp "${repo_root}/scripts/testdata/official-spaces-alpha-tls-proxy.mjs" \
+  "${proof_container_inputs}/tls-proxy.mjs"
 export DOCKER_CONFIG="${proof_docker_config}"
 export DOCKER_HOST="${proof_docker_host}"
 resource_label="comail.proof.run=${run_id}"
@@ -191,7 +198,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-trap 'status=$?; printf "mailbox proof stopped at wrapper line %d (status %d)\n" "${LINENO}" "${status}" >&2' ERR
+trap 'printf "mailbox proof stopped at wrapper line %d (status %d)\n" "${LINENO}" "$?" >&2' ERR
 
 printf 'mailbox proof: verifying and deriving the pinned image\n' >&2
 docker pull --platform "${platform}" "${base_image}" >/dev/null
@@ -277,13 +284,10 @@ initialize_volume() {
 
 start_pds() {
   local name="$1" volume="$2" image="$3"
-  docker create --platform "${platform}" --name "${name}" \
+  docker create --platform "${platform}" --name "${name}" --user root \
     --label "${resource_label}" --network "${network}" --ip 192.0.2.10 \
     --add-host pds-proof.test:192.0.2.10 \
     -v "${volume}:/data" \
-    -v "${repo_root}/scripts/testdata/official-spaces-alpha-plc-mock.mjs:/proof/plc-mock.mjs:ro" \
-    -v "${repo_root}/scripts/testdata/official-spaces-alpha-run-with-plc.sh:/proof/run-with-plc.sh:ro" \
-    -v "${repo_root}/scripts/testdata/official-spaces-alpha-tls-proxy.mjs:/proof/tls-proxy.mjs:ro" \
     -e PDS_HOSTNAME=pds-proof.test \
     -e PDS_PORT=2583 \
     -e PDS_DEV_MODE=true \
@@ -300,7 +304,9 @@ start_pds() {
     -e TLS_KEY_FILE=/tmp/comail-tls-key.pem \
     -e TLS_CERT_FILE=/tmp/comail-tls-cert.pem \
     -e SSL_CERT_FILE=/tmp/comail-tls-cert.pem \
-    --entrypoint dumb-init "${image}" -- /bin/sh /proof/run-with-plc.sh >/dev/null
+    --entrypoint dumb-init "${image}" -- /bin/sh -c \
+    'chmod -R a+rX /proof && exec /bin/su node -s /bin/sh -c "exec /bin/sh /proof/run-with-plc.sh"' >/dev/null
+  docker cp "${proof_container_inputs}/." "${name}:/proof" >/dev/null
   docker cp "${runtime_dir}/tls-key.pem" "${name}:/tmp/comail-tls-key.pem" >/dev/null
   docker cp "${runtime_dir}/tls-cert.pem" "${name}:/tmp/comail-tls-cert.pem" >/dev/null
   docker start "${name}" >/dev/null
@@ -319,6 +325,9 @@ start_pds() {
       return 1
     fi
     if ! docker ps --format '{{.Names}}' | rg -x "${name}" >/dev/null; then
+      docker container inspect --format \
+        'PDS container stopped: exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{json .State.Error}} entrypoint={{json .Config.Entrypoint}} command={{json .Config.Cmd}}' \
+        "${name}" >&2 || true
       docker logs "${name}" >&2
       return 1
     fi
@@ -437,7 +446,7 @@ assessment="$(jq -n \
     scope:"Disposable isolated local-Docker proof using only synthetic non-sensitive identities, RFC 5322 bytes, records, and fresh projections; this is exact compatibility evidence, not hosted-provider or authority certification.",
     pins:{baseCommit:$baseCommit,baseImage:$baseImage,platform:$platform,patchedPrepareSHA256:$patchedPrepareSHA256,installerSHA256:$installerSHA256,recipeSHA256:$recipeSHA256,schemaBundleSHA256:$schemaBundleSHA256},
     checks:{
-      unmodifiedBaseRejectsStrictSchemas:"pass: validate=true rejected the unpublished third-party record and committed nothing",
+      unmodifiedBaseRejectsStrictSchemas:"pass: validate=true rejected the unregistered third-party record and committed nothing",
       mailboxLexiconValidation:"pass: all 311 create receipts returned validationStatus=valid across the exact five schemas",
       failClosedValidation:"pass: invalid known-schema and unknown-schema writes were rejected without residual records",
       atomicApplyWrites:"pass: a failing two-create batch rolled back its valid first create",

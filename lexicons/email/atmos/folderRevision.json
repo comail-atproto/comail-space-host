@@ -1,11 +1,10 @@
 {
   "lexicon": 1,
   "id": "email.atmos.folderRevision",
-  "draft": true,
   "defs": {
     "main": {
       "type": "record",
-      "description": "DRAFT — NOT YET PUBLISHED. Immutable create-only causal revision for one 71-character stable folder identity. The revision and deterministic email.atmos.folderOperation claim are created atomically. Standard role identities, names, and roles are canonical and cannot be renamed, rebound, or deleted. Custom rename conflicts reduce by revision height then unsigned UTF-8 operation-ID order; tombstone is grow-only.",
+      "description": "ALPHA. Immutable create-only causal revision for one 71-character stable folder identity. The revision and deterministic email.atmos.folderOperation claim are created atomically. Standard role identities, names, and roles are canonical and cannot be renamed, rebound, or deleted. Custom rename conflicts reduce by revision height then unsigned UTF-8 operation-ID order; tombstone is grow-only.",
       "key": "any",
       "record": {
         "type": "object",
