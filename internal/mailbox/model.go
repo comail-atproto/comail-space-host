@@ -14,9 +14,14 @@ const (
 	MailboxSpaceType       = "email.atmos.mailbox"
 	MessageCollection      = "email.atmos.message"
 	MessageStateCollection = "email.atmos.messageState"
-	FolderCollection       = "email.atmos.folder"
-	MessageMIMEType        = "message/rfc822"
-	MaxRawMessageBytes     = 10 * 1024 * 1024
+	// MessageStateRevisionCollection is the append-only v3 authority
+	// collection. MessageStateCollection remains the legacy CAS snapshot
+	// collection and cannot satisfy a v3 authority certificate.
+	MessageStateRevisionCollection  = "email.atmos.messageStateRevision"
+	MessageStateOperationCollection = "email.atmos.messageStateOperation"
+	FolderCollection                = "email.atmos.folder"
+	MessageMIMEType                 = "message/rfc822"
+	MaxRawMessageBytes              = 10 * 1024 * 1024
 
 	fingerprintPrefix = "sha256-"
 )
@@ -44,6 +49,7 @@ type MessageRecord struct {
 	SHA256              string   `json:"sha256"`
 	Size                int64    `json:"size"`
 	DeliveryFingerprint string   `json:"deliveryFingerprint"`
+	LogicalMessageID    string   `json:"logicalMessageId"`
 	SourceKey           string   `json:"sourceKey,omitempty"`
 	InitialMailbox      string   `json:"initialMailbox"`
 	DeliveredAt         string   `json:"deliveredAt,omitempty"`
@@ -116,6 +122,22 @@ func DeliveryFingerprint(recipientDID string, raw []byte) string {
 
 func ImportedFingerprint(src ImportedMessage) string {
 	return deliveryFingerprint(src.RecipientDID, src.SourceKey, src.Raw)
+}
+
+// LogicalMessageID groups immutable content versions of one source message.
+// Inbound delivery has no source key and uses its immutable fingerprint. JMAP
+// draft/sent capture and migration use a recipient-scoped source identity, so
+// editing the RFC 5322 bytes creates a new version without changing identity.
+func LogicalMessageID(recipientDID, sourceKey, deliveryFingerprint string) string {
+	if sourceKey == "" {
+		return deliveryFingerprint
+	}
+	h := sha256.New()
+	_, _ = h.Write([]byte("comail-logical-message-v1\x00"))
+	_, _ = h.Write([]byte(recipientDID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(sourceKey))
+	return fingerprintPrefix + hex.EncodeToString(h.Sum(nil))
 }
 
 func deliveryFingerprint(recipientDID, sourceKey string, raw []byte) string {
@@ -200,6 +222,7 @@ func NewMessagePair(src ImportedMessage, blob BlobRef) (MessagePair, error) {
 		SHA256:              RawSHA256(src.Raw),
 		Size:                int64(len(src.Raw)),
 		DeliveryFingerprint: rkey,
+		LogicalMessageID:    LogicalMessageID(src.RecipientDID, src.SourceKey, rkey),
 		SourceKey:           src.SourceKey,
 		InitialMailbox:      src.Mailbox,
 		SourceMessageID:     src.MessageID,
@@ -258,7 +281,11 @@ func ValidateStoredMessage(recipientDID, rkey string, record MessageRecord, raw 
 		return fmt.Errorf("%w: raw size %d", ErrIntegrity, len(raw))
 	}
 	wantFingerprint := deliveryFingerprint(recipientDID, record.SourceKey, raw)
-	if rkey != wantFingerprint || record.DeliveryFingerprint != wantFingerprint {
+	wantLogicalID := LogicalMessageID(recipientDID, record.SourceKey, wantFingerprint)
+	// Legacy v2 records are immutable and predate logicalMessageId. They remain
+	// readable, while every newly written record carries and verifies the field.
+	if rkey != wantFingerprint || record.DeliveryFingerprint != wantFingerprint ||
+		(record.LogicalMessageID != "" && record.LogicalMessageID != wantLogicalID) {
 		return fmt.Errorf("%w: delivery fingerprint mismatch", ErrIntegrity)
 	}
 	if record.SHA256 != RawSHA256(raw) || record.Size != int64(len(raw)) {
