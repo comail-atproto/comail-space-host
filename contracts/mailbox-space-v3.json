@@ -1,0 +1,36 @@
+{
+  "spaceType": "email.atmos.mailbox",
+  "version": 3,
+  "cardinality": "one-space-per-email-account",
+  "authorityModel": "append-only",
+  "requiredWriteValidation": true,
+  "writerActions": ["create"],
+  "collections": [
+    {
+      "nsid": "email.atmos.message",
+      "authority": "immutable-create-only"
+    },
+    {
+      "nsid": "email.atmos.messageStateRevision",
+      "authority": "immutable-create-only"
+    },
+    {
+      "nsid": "email.atmos.messageStateOperation",
+      "authority": "immutable-create-only"
+    },
+    {
+      "nsid": "email.atmos.folderRevision",
+      "authority": "immutable-create-only"
+    },
+    {
+      "nsid": "email.atmos.folderOperation",
+      "authority": "immutable-create-only"
+    }
+  ],
+  "recovery": {
+    "sourceAuthentication": ["getLatestCommit", "getRepo", "getLatestCommit"],
+    "blobRead": "getBlob",
+    "requiresStableState": true,
+    "offlineCarIsAuthority": false
+  }
+}

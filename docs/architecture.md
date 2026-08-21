@@ -117,6 +117,15 @@ closeable, redacted, sealed, and capped at 64 MiB of unique message bytes;
 larger recovery requires a separately reviewed encrypted streaming/spooling
 design before activation.
 
+The official v3 projector accepts only that sealed byte-complete capability.
+It creates a new absolute SQLite destination with mode 0600, deterministically
+projects the seven canonical folders and each live state's selected immutable
+message version, omits superseded versions and tombstones, and deletes the
+database plus SQLite sidecars on any failure. Its semantic manifest is stable
+across equivalent source visitation order and persisted-PDS restart. This is a
+recovery proof target; it does not claim that a destroyed Stalwart instance has
+yet been rebuilt and queried through JMAP/IMAP.
+
 This transport is not registered in `cmd/comail-space-host`, has no public HTTP
 route, certificate, relay binding, worker, or activation path, and cannot make
 hosted alpha writes while the PDS rejects the unpublished `email.atmos.*`
@@ -183,10 +192,14 @@ would keep it as a rollback artifact under the existing retention policy.
 
 The official Spaces profile uses two separate browser authorizations. A
 one-time provisioning grant is bound to the exact authority DID and exact
-mailbox key and carries only `action=read_self&manage=create`. It creates or
-reconciles a member-list/open-app space, proves that the fresh space has zero
-explicit members (the owner is implicit), then revokes both OAuth tokens and
-deletes the encrypted local session before reporting success.
+mailbox key and carries only `action=read_self&manage=create`. It explicitly
+freezes the declaration's exact five collections because the alpha otherwise
+expands an omitted collection set to those declaration defaults. Those
+collections add no record-write action; wildcard, create, update, and delete
+record actions remain absent. The grant creates or reconciles a
+member-list/open-app space, proves that the fresh space has zero explicit
+members (the owner is implicit), then revokes both OAuth tokens and deletes the
+encrypted local session before reporting success.
 
 The steady grant is separately bound to that exact DID and key. It carries
 only `read` and `create` over the five append-only mailbox collections plus a

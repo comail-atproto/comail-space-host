@@ -33,6 +33,7 @@ import (
 const (
 	commitVersion          = 1
 	commitContextDomain    = "atproto-space-v1"
+	signedCommitType       = "com.atproto.space.defs#signedCommit"
 	ltHashStateBytes       = 2048
 	maxCARHeaderBytes      = 64 * 1024
 	maxCommitBlockBytes    = 64 * 1024
@@ -323,6 +324,7 @@ func (c *Client) readSourceCommit(ctx context.Context, credential ScopedDoer) (s
 	}
 	var output struct {
 		Commit struct {
+			Type      string          `json:"$type"`
 			Version   int64           `json:"ver"`
 			Hash      strictJSONBytes `json:"hash"`
 			IKM       strictJSONBytes `json:"ikm"`
@@ -333,6 +335,9 @@ func (c *Client) readSourceCommit(ctx context.Context, credential ScopedDoer) (s
 	}
 	if err := decodeStrictBounded(response.Body, maxCommitBytes, &output); err != nil {
 		return signedRepoCommit{}, fmt.Errorf("%w: invalid latest commit", ErrSnapshotVerification)
+	}
+	if output.Commit.Type != signedCommitType {
+		return signedRepoCommit{}, fmt.Errorf("%w: invalid latest commit type", ErrSnapshotVerification)
 	}
 	return signedRepoCommit{
 		Version: output.Commit.Version, Hash: append([]byte(nil), output.Commit.Hash...),
