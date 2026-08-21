@@ -1,0 +1,16 @@
+repository=https://github.com/bluesky-social/atproto.git
+proposal=https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data
+proposal_commit=54c9cf5153d668c4f4fb4438529967412e861775
+pull_request=https://github.com/bluesky-social/atproto/pull/5187
+commit=89deb9faca20e56fa2a262fe9746ed52bc1095ba
+reference_app=https://github.com/bluesky-social/bulletin.git
+reference_app_commit=ccca73d212167e20da56db4691ba7c94e9ad5ccc
+docker_image=ghcr.io/bluesky-social/atproto:pds-spaces-alpha
+docker_platform=linux/amd64
+docker_digest=sha256:9641f3d5c4ce2bffeee3cd740284c7fc445ef4b4e2ba73f01bf19a59923d0dd4
+docker_config=sha256:924c5f1de032fd5dcea137b97b26b41c98a4d7dcdaa36e2c8fd28f788e3cd622
+sdk_snapshot=0.0.0-spaces-alpha-20260818163953
+oauth_scopes_snapshot=0.0.0-spaces-alpha-20260818163953
+space_api=com.atproto.space
+space_management_api=com.atproto.simplespace
+verified_at=2026-08-20

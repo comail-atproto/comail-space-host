@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "provider": "atproto-reference-pds-spaces-alpha",
+  "repository": "https://github.com/bluesky-social/atproto.git",
+  "epoch": "89deb9faca20e56fa2a262fe9746ed52bc1095ba",
+  "image": "ghcr.io/bluesky-social/atproto:pds-spaces-alpha@sha256:9641f3d5c4ce2bffeee3cd740284c7fc445ef4b4e2ba73f01bf19a59923d0dd4",
+  "imageConfig": "sha256:924c5f1de032fd5dcea137b97b26b41c98a4d7dcdaa36e2c8fd28f788e3cd622",
+  "platform": "linux/amd64",
+  "evaluatedAt": "2026-08-20",
+  "passed": false,
+  "scope": "Disposable isolated localhost proof with synthetic non-sensitive identities and records only; this is compatibility evidence, not an authority certificate.",
+  "referencePins": {
+    "proposalCommit": "54c9cf5153d668c4f4fb4438529967412e861775",
+    "referenceAppCommit": "ccca73d212167e20da56db4691ba7c94e9ad5ccc",
+    "sdkSnapshot": "0.0.0-spaces-alpha-20260818163953",
+    "executedByProof": false
+  },
+  "checks": {
+    "officialAddressingAndMethods": "pass",
+    "atomicApplyWrites": "pass: failing two-write batch rolled back its valid create",
+    "syntheticPrepare": "pass: captured=99 skipped=0 verified=99",
+    "idempotencyRerun": "pass: captured=0 skipped=99 verified=99",
+    "canonicalByteReadback": "pass: 99/99 exact RFC 5322 blobs",
+    "delegationAndDpop": "pass",
+    "delegationReplay": "pass: exact JwtReplayed rejection",
+    "wrongKeyAndSpace": "pass: exact DpopKeyMismatch, InvalidCredential, and InvalidDelegationToken rejections",
+    "mailboxLexiconValidation": "not attempted: alpha writes used validate=false",
+    "narrowOAuthGrant": "not attempted: synthetic account credential used",
+    "staleCompareAndSwap": "fail: the alpha lexicons expose no write precondition and the reference PDS accepted a stale swapRecord field while overwriting the newer record",
+    "authorityAdmission": "fail-closed",
+    "activation": "not attempted"
+  },
+  "limitations": {
+    "production": "Real member mail remains on unchanged Stalwart authority; the upstream alpha explicitly excludes production and sensitive data.",
+    "mutableState": "The current Comail mailbox contract requires provider-enforced compare-and-swap; client-side read/check/write is not an acceptable substitute.",
+    "oauth": "The local protocol probe used the synthetic account legacy access JWT to request delegation tokens; narrow interactive OAuth scope proof and a reusable writer-repo lifecycle remain required.",
+    "schema": "Writes used validate=false because the unpublished email.atmos mailbox lexicons were not installed in the disposable PDS; mailbox-schema validation remains required.",
+    "durability": "The alpha has no security-review, backup, stable-schema, or non-destructive-upgrade guarantee."
+  }
+}
