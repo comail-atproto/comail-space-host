@@ -55,6 +55,45 @@ func (t Target) ValidateFor(recipientDID string) error {
 	return nil
 }
 
+// RecordURI constructs the exact official permissioned-repo record address.
+// The space authority is in SpaceURI; the distinct record-author repository
+// DID is the first path segment after the space prefix.
+func RecordURI(target Target, collection, rkey string) (string, error) {
+	if err := target.ValidateFor(target.RepoDID); err != nil {
+		return "", ErrTarget
+	}
+	if _, err := syntax.ParseNSID(collection); err != nil {
+		return "", ErrTarget
+	}
+	if _, err := syntax.ParseRecordKey(rkey); err != nil {
+		return "", ErrTarget
+	}
+	return target.SpaceURI + "/" + target.RepoDID + "/" + collection + "/" + rkey, nil
+}
+
+// ValidateRecordURI validates the provider-authenticated v2 record address.
+// Legacy service-auth adapters may author records under a pinned service DID;
+// official member-authored v3 code must additionally compare against RecordURI.
+func ValidateRecordURI(target Target, uri, collection, rkey string) error {
+	if err := target.ValidateFor(target.RepoDID); err != nil || !strings.HasPrefix(uri, target.SpaceURI+"/") {
+		return ErrTarget
+	}
+	segments := strings.Split(strings.TrimPrefix(uri, target.SpaceURI+"/"), "/")
+	if len(segments) != 3 || segments[1] != collection || segments[2] != rkey {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseDID(segments[0]); err != nil {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseNSID(segments[1]); err != nil {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseRecordKey(segments[2]); err != nil {
+		return ErrTarget
+	}
+	return nil
+}
+
 type Capabilities struct {
 	AtomicApplyWrites bool `json:"atomicApplyWrites"`
 	CompareAndSwap    bool `json:"compareAndSwap"`
