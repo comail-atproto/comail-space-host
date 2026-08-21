@@ -1,0 +1,103 @@
+{
+  "lexicon": 1,
+  "id": "email.atmos.messageStateRevision",
+  "draft": true,
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "DRAFT — NOT YET PUBLISHED. Immutable create-only causal revision for one logical Comail message. Writers reference every observed head and atomically create a deterministic email.atmos.messageStateOperation claim. Reducers validate a commit-bound complete graph, resolve independent fields by revision height then unsigned UTF-8 operation-ID order, and treat tombstone as irreversible.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "logicalMessageId",
+          "operationId",
+          "parents",
+          "revision",
+          "createdAt"
+        ],
+        "properties": {
+          "logicalMessageId": {
+            "type": "string",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "operationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "parents": {
+            "type": "array",
+            "maxLength": 64,
+            "items": {
+              "type": "string",
+              "minLength": 70,
+              "maxLength": 70
+            }
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "version": {
+            "type": "string",
+            "description": "Selected immutable email.atmos.message record key for this logical message.",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "mailboxIds": {
+            "type": "array",
+            "minLength": 1,
+            "maxLength": 32,
+            "items": {
+              "type": "string",
+              "minLength": 71,
+              "maxLength": 71
+            }
+          },
+          "keywords": {
+            "type": "array",
+            "maxLength": 128,
+            "items": {
+              "type": "ref",
+              "ref": "#keywordAssignment"
+            }
+          },
+          "deletePending": {
+            "type": "boolean",
+            "description": "Per-field assignment for IMAP Deleted state before expunge. This is distinct from the irreversible canonical tombstone."
+          },
+          "tombstone": {
+            "type": "boolean",
+            "description": "Grow-only irreversible logical deletion. False and resurrection are rejected by the authority reducer."
+          },
+          "merge": {
+            "type": "boolean",
+            "description": "True only for a parent-only causal-head join with no field assignments."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Audit metadata only. Reducers never use client time for conflict ordering."
+          }
+        }
+      }
+    },
+    "keywordAssignment": {
+      "type": "object",
+      "required": ["name", "present"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "present": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

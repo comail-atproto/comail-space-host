@@ -13,12 +13,16 @@ import (
 func TestLexiconsAreValidAndIDsMatchPaths(t *testing.T) {
 	root := filepath.Join("..", "..", "lexicons", "email", "atmos")
 	want := map[string]string{
-		"message.json":      "email.atmos.message",
-		"messageState.json": "email.atmos.messageState",
-		"folder.json":       "email.atmos.folder",
-		"blobChunk.json":    "email.atmos.blobChunk",
-		"blobManifest.json": "email.atmos.blobManifest",
-		"blobIndex.json":    "email.atmos.blobIndex",
+		"message.json":               "email.atmos.message",
+		"messageState.json":          "email.atmos.messageState",
+		"messageStateRevision.json":  "email.atmos.messageStateRevision",
+		"messageStateOperation.json": "email.atmos.messageStateOperation",
+		"folder.json":                "email.atmos.folder",
+		"folderRevision.json":        "email.atmos.folderRevision",
+		"folderOperation.json":       "email.atmos.folderOperation",
+		"blobChunk.json":             "email.atmos.blobChunk",
+		"blobManifest.json":          "email.atmos.blobManifest",
+		"blobIndex.json":             "email.atmos.blobIndex",
 	}
 	for name, wantID := range want {
 		data, err := os.ReadFile(filepath.Join(root, name))

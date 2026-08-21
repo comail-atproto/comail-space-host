@@ -1,10 +1,11 @@
 {
   "lexicon": 1,
   "id": "email.atmos.message",
+  "draft": true,
   "defs": {
     "main": {
       "type": "record",
-      "description": "An immutable private Comail message. Canonical RFC 5322 bytes are stored in the referenced permissioned blob; integrity and delivery metadata allow a standards-facing mailbox to be rebuilt.",
+      "description": "DRAFT — NOT YET PUBLISHED. An immutable private Comail message. Canonical RFC 5322 bytes are stored in the referenced permissioned blob; integrity and delivery metadata allow a standards-facing mailbox to be rebuilt.",
       "key": "any",
       "record": {
         "type": "object",
@@ -13,6 +14,7 @@
           "sha256",
           "size",
           "deliveryFingerprint",
+          "logicalMessageId",
           "initialMailbox"
         ],
         "properties": {
@@ -36,11 +38,17 @@
             "minLength": 71,
             "maxLength": 71
           },
-		  "sourceKey": {
-			"type": "string",
-			"description": "Stable opaque source identity used to preserve distinct messages with identical RFC 5322 bytes during migration.",
-			"maxLength": 512
-		  },
+          "logicalMessageId": {
+            "type": "string",
+            "description": "Stable identity shared by every immutable content version of one logical message. Inbound delivery may use the delivery fingerprint; draft and sent versions use a source-key-derived identity.",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "sourceKey": {
+            "type": "string",
+            "description": "Stable opaque source identity used to preserve distinct messages with identical RFC 5322 bytes during migration.",
+            "maxLength": 512
+          },
           "initialMailbox": {
             "type": "string",
             "minLength": 1,

@@ -95,6 +95,17 @@ epoch, revision, and both CAR roots. This is a stable read from the trusted
 PDS, not proof that an arbitrary holder's CAR was authored by the member; an
 uploaded, cached, or offline CAR can never construct the capability.
 
+Mailbox recovery accepts only that concrete source capability. It strictly
+decodes the five append-only collections, rejects orphan or mismatched
+operation claims and immutable versions, reduces every causal folder and
+message-state graph, proves the complete canonical standard-folder set, and
+returns another opaque target/snapshot-bound sealed value. No raw CAR, record
+slice, snapshot ID, or completeness boolean can enter the production reducer.
+The CAR contains blob references rather than RFC 5322 blob bytes, so each
+selected message blob must still be fetched from the same exact target and
+pass `mailbox.ValidateStoredMessage` before projection or recovery can claim
+message-content integrity.
+
 This transport is not registered in `cmd/comail-space-host`, has no public HTTP
 route, certificate, relay binding, worker, or activation path, and cannot make
 hosted alpha writes while the PDS rejects the unpublished `email.atmos.*`

@@ -65,8 +65,8 @@ type FolderOperationClaim struct {
 }
 
 // VerifiedFolderSnapshot is a resource-scoped opaque capability created only
-// after a repository verifier proves a complete signed commit/CAR inventory.
-// No production constructor exists until that verifier is implemented.
+// while reducing a complete source-authenticated repository inventory. It has
+// no public constructor or caller-supplied CAR path.
 type VerifiedFolderSnapshot struct {
 	snapshotID      string
 	folderID        string
@@ -76,8 +76,8 @@ type VerifiedFolderSnapshot struct {
 }
 
 // VerifiedFolderSetSnapshot binds a complete set of reduced folder states to
-// one authenticated repository commit. It is intentionally opaque until the
-// signed commit/CAR verifier can construct it from a fully exhausted snapshot.
+// one source-authenticated repository snapshot. It is intentionally opaque and
+// has no constructor outside this package.
 type VerifiedFolderSetSnapshot struct {
 	snapshotID   string
 	repoDID      string

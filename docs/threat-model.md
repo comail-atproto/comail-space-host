@@ -36,6 +36,10 @@ logs, and unauthenticated clients must not.
   CARs are untrusted and cannot mint mailbox authority. Alpha recovery must be
   one stable latest/CAR/latest read from the exact authenticated PDS, with
   strict CAR consistency checks and target-bound opaque output.
+- Only that opaque live-source output may enter append-only mailbox reduction;
+  raw CAR bytes, record slices, snapshot IDs, and completeness flags cannot.
+  Reduced metadata/state remains non-projectable until each referenced blob is
+  fetched from the same exact target and its RFC 5322 bytes are hash-verified.
 - Projectors use cross-process fencing and poison-record quarantine.
 - Queue and vault encryption keys live outside their databases and rotate.
 - Logs and evidence reject tokens and message-derived text; hashes and counts
