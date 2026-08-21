@@ -14,9 +14,14 @@ const (
 	MailboxSpaceType       = "email.atmos.mailbox"
 	MessageCollection      = "email.atmos.message"
 	MessageStateCollection = "email.atmos.messageState"
-	FolderCollection       = "email.atmos.folder"
-	MessageMIMEType        = "message/rfc822"
-	MaxRawMessageBytes     = 10 * 1024 * 1024
+	// MessageStateRevisionCollection is the append-only v3 authority
+	// collection. MessageStateCollection remains the legacy CAS snapshot
+	// collection and cannot satisfy a v3 authority certificate.
+	MessageStateRevisionCollection  = "email.atmos.messageStateRevision"
+	MessageStateOperationCollection = "email.atmos.messageStateOperation"
+	FolderCollection                = "email.atmos.folder"
+	MessageMIMEType                 = "message/rfc822"
+	MaxRawMessageBytes              = 10 * 1024 * 1024
 
 	fingerprintPrefix = "sha256-"
 )

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 )
 
@@ -33,20 +34,22 @@ func (t Target) ValidateFor(recipientDID string) error {
 	if recipientDID != "" && t.RepoDID != recipientDID {
 		return ErrTarget
 	}
-	legacyPrefix := "at://" + t.RepoDID + "/space/"
-	standardPrefix := "ats://" + t.RepoDID + "/"
-	spaceName := t.SpaceURI
-	switch {
-	case strings.HasPrefix(spaceName, legacyPrefix):
-		spaceName = strings.TrimPrefix(spaceName, legacyPrefix)
-	case strings.HasPrefix(spaceName, standardPrefix):
-		spaceName = strings.TrimPrefix(spaceName, standardPrefix)
-	default:
+	if _, err := syntax.ParseDID(t.RepoDID); err != nil || !strings.HasPrefix(t.SpaceURI, "at://") {
 		return ErrTarget
 	}
-	spaceType, spaceKey, found := strings.Cut(spaceName, "/")
-	if !found || spaceType == "" || !strings.Contains(spaceType, ".") || spaceKey == "" ||
-		strings.ContainsAny(spaceName, "?# \t\r\n") || strings.Contains(spaceKey, "/") || spaceKey == "." || spaceKey == ".." {
+	spaceAuthority, path, found := strings.Cut(strings.TrimPrefix(t.SpaceURI, "at://"), "/")
+	if _, err := syntax.ParseDID(spaceAuthority); !found || err != nil {
+		return ErrTarget
+	}
+	segments := strings.Split(path, "/")
+	if len(segments) != 3 || segments[0] != "space" {
+		return ErrTarget
+	}
+	spaceType, spaceKey := segments[1], segments[2]
+	if _, err := syntax.ParseNSID(spaceType); err != nil || spaceType != mailbox.MailboxSpaceType {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseRecordKey(spaceKey); err != nil || strings.ContainsAny(path, "?# \t\r\n") {
 		return ErrTarget
 	}
 	return nil
