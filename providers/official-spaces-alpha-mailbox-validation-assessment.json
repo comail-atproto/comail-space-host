@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "provider": "atproto-reference-pds-spaces-alpha",
+  "evaluatedAt": "2026-08-21",
+  "passed": true,
+  "scope": "Disposable isolated local-Docker proof using only synthetic non-sensitive identities, RFC 5322 bytes, records, and fresh projections; this is exact compatibility evidence, not hosted-provider or authority certification.",
+  "pins": {
+    "baseCommit": "89deb9faca20e56fa2a262fe9746ed52bc1095ba",
+    "baseImage": "ghcr.io/bluesky-social/atproto:pds-spaces-alpha@sha256:9641f3d5c4ce2bffeee3cd740284c7fc445ef4b4e2ba73f01bf19a59923d0dd4",
+    "platform": "linux/amd64",
+    "patchedPrepareSHA256": "3514e51518ff93e3f7d6e1d3533e064c77c79d4b0e82475ec5b1392eaa4cfa32",
+    "installerSHA256": "17a1945f7cebd70fd0626b54502b6a414feaadf0e43108a8f474d9588e1708f7",
+    "recipeSHA256": "7723c6a9a9677df9e4002958eb30e7b0fcc5ad02a5371e27df776025aba0daf7",
+    "schemaBundleSHA256": "637a0a17ea286ead7703b8769e4031cd345e13d3ea0a4edebed351bd4915a7b8"
+  },
+  "checks": {
+    "unmodifiedBaseRejectsStrictSchemas": "pass: validate=true rejected the unpublished third-party record and committed nothing",
+    "mailboxLexiconValidation": "pass: all 311 create receipts returned validationStatus=valid across the exact five schemas",
+    "failClosedValidation": "pass: invalid known-schema and unknown-schema writes were rejected without residual records",
+    "atomicApplyWrites": "pass: a failing two-create batch rolled back its valid first create",
+    "syntheticPrepare": "pass: captured=99 skipped=0 verified=99",
+    "idempotencyRerun": "pass: captured=0 skipped=99 verified=99",
+    "sourceAuthenticatedRecovery": "pass: signed stable CAR, complete five-collection reduction, and 99/99 exact blobs before and after PDS restart",
+    "freshProjectionRebuild": "pass: fresh SQLite projections committed with mode 0600; source-derived semantic manifests matched within each run and across restart",
+    "delegationAndDpop": "pass",
+    "hostedBlueskyAcceptance": false,
+    "authorityCertified": false,
+    "activationAttempted": false
+  },
+  "limitations": {
+    "schemas": "The exact five record schemas are bundled only into this isolated image and are not published at the live Lexicon authority yet.",
+    "oauth": "Synthetic account legacy access JWT was used for the writer lane; the exact narrow steady OAuth grant was proven separately against the hosted alpha account.",
+    "mail": "There is no real mail, real member identity, Stalwart authority switch, hosted write, or production activation in this proof.",
+    "durability": "The upstream alpha still has no stable-schema, backup, security-review, or non-destructive-upgrade guarantee."
+  }
+}

@@ -117,6 +117,15 @@ closeable, redacted, sealed, and capped at 64 MiB of unique message bytes;
 larger recovery requires a separately reviewed encrypted streaming/spooling
 design before activation.
 
+The official v3 projector accepts only that sealed byte-complete capability.
+It creates a new absolute SQLite destination with mode 0600, deterministically
+projects the seven canonical folders and each live state's selected immutable
+message version, omits superseded versions and tombstones, and deletes the
+database plus SQLite sidecars on any failure. Its semantic manifest is stable
+across equivalent source visitation order and persisted-PDS restart. This is a
+recovery proof target; it does not claim that a destroyed Stalwart instance has
+yet been rebuilt and queried through JMAP/IMAP.
+
 This transport is not registered in `cmd/comail-space-host`, has no public HTTP
 route, certificate, relay binding, worker, or activation path, and cannot make
 hosted alpha writes while the PDS rejects the unpublished `email.atmos.*`

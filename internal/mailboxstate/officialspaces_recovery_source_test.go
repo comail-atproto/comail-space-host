@@ -308,7 +308,8 @@ func encodeSyntheticSource(t *testing.T, inventory officialSpacesInventory, priv
 		car = appendSyntheticCARBlock(car, recordCID, record.Value)
 	}
 	latestBytes, err := json.Marshal(map[string]any{"commit": map[string]any{
-		"ver": 1, "hash": syntheticLexBytes(commit.hash), "ikm": syntheticLexBytes(commit.ikm),
+		"$type": "com.atproto.space.defs#signedCommit",
+		"ver":   1, "hash": syntheticLexBytes(commit.hash), "ikm": syntheticLexBytes(commit.ikm),
 		"sig": syntheticLexBytes(commit.signature), "mac": syntheticLexBytes(commit.mac), "rev": commit.revision,
 	}})
 	if err != nil {

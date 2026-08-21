@@ -28,6 +28,31 @@ lexicons. The proof also uses the synthetic account's legacy access JWT, not
 the alpha SDK's narrow interactive OAuth grant. Both rows remain explicitly
 `not attempted` in the assessment and remain promotion blockers.
 
+A separate exact-contract proof in
+`scripts/test-official-spaces-alpha-mailbox.sh` preserves that unmodified
+baseline, then derives an isolated image from the same pinned official digest
+by installing only the five byte-pinned v3 record schemas. The proof exposes
+the disposable PDS at one self-signed HTTPS origin on an internal Docker
+network so the PDS verifier, DID document, DPoP proof, and Comail's pinned
+client all bind the same URL without weakening SSRF or redirect protection.
+The unmodified image first rejects a `validate=true` mailbox record and commits
+nothing. The derived image then returns `validationStatus=valid` for all 311
+creates: 99 immutable messages, 99 state revisions, 99 state-operation claims,
+and the revision/operation pairs for all seven canonical folders. Invalid
+known and unknown schemas fail closed, and a mixed duplicate batch rolls back
+its valid first create.
+
+The same run acquires a delegated DPoP credential, verifies a stable signed
+latest/CAR/latest source read, reduces the complete five-collection graph,
+fetches and byte-verifies all 99 RFC 5322 blobs, and builds two fresh mode-0600
+SQLite projections with identical semantic manifests. It restarts the PDS on
+the same disposable volume and repeats source-authenticated recovery and fresh
+projection successfully. The exact result is recorded in
+`providers/official-spaces-alpha-mailbox-validation-assessment.json`.
+This is isolated compatibility evidence, not hosted-provider acceptance: the
+five schemas are not yet published at the live authority, and the hosted alpha
+does not yet resolve third-party published record schemas.
+
 This is deliberately a failing authority assessment. The alpha lexicons do
 not expose a record-CID or commit precondition. The reference PDS accepted an
 unknown stale `swapRecord` field and overwrote the newer state. The redacted
@@ -51,18 +76,20 @@ capability.
 
 The production-dark reducer accepts only that opaque live-source capability,
 not saved CARs or caller-supplied records. It proves the complete append-only
-message/folder graphs and emits a second sealed state capability. This is not
-yet projection-ready: the full CAR does not carry referenced RFC 5322 blob
-bytes, and every selected blob must be fetched from the exact source and pass
-byte/hash validation before any rebuild or activation gate can pass.
+message/folder graphs and emits a second sealed state capability. The full CAR
+does not carry referenced RFC 5322 blob bytes, so every selected blob is fetched
+from the exact source and must pass byte/hash validation before projection.
 
-The production-dark content gate now performs that fetch for every immutable
+The production-dark content gate performs that fetch for every immutable
 version without accepting a source snapshot, CID list, path, or byte input
 from its caller. It deduplicates identical CIDs, proves the repository did not
 move before authentication or change across the blob batch, and returns only
 a closeable sealed capability after all bytes pass. This first bounded form
-fails closed above 64 MiB of unique blobs and is not registered with a worker
-or projector; it is conformance/recovery plumbing, not rollout admission.
+fails closed above 64 MiB of unique blobs. The v3 projector accepts only that
+concrete sealed capability, creates a new owner-only SQLite destination, removes
+partial files on failure, omits superseded or tombstoned content, and emits a
+deterministic semantic manifest. It is still conformance/recovery plumbing,
+not a Stalwart rebuild or rollout admission.
 
 The remaining credential gap is an unattended, exact-target OAuth broker and
 reauthorization lifecycle; the adapter may not persist the lab browser

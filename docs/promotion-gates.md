@@ -20,6 +20,9 @@ mailbox, routing, or flag changes are authorized by passing these gates.
 - [ ] Message-size and quota limits are measured and compatible.
 - [ ] Mailbox Lexicons are provider-registered and server validation is
       enabled, or an equivalently strict certified validation path is approved.
+- [x] The exact official-alpha digest plus an isolated five-schema install
+      accepts 311 `validate=true` creates, rejects invalid/unknown schemas, and
+      rolls back a failing mixed batch. This does not satisfy hosted registration.
 
 ## Gate B — confidentiality and integrity
 
@@ -43,6 +46,9 @@ mailbox, routing, or flag changes are authorized by passing these gates.
       allocate stable per-folder UIDs when the source has no IMAP identity.
 - [x] Conflict-safe read/flag/move state survives a clean rebuild; a tombstoned
       message remains verifiable but is omitted from the rebuilt projection.
+- [x] The official v3 source-authenticated path recovers 99/99 synthetic blobs
+      and seven canonical folders into identical fresh mode-0600 SQLite
+      projections before and after a persisted-volume PDS restart.
 
 ## Gate D — operator-only readiness
 

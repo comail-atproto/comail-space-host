@@ -66,6 +66,8 @@ access without an adapter restart or a stored refresh token.
 go test ./...
 go vet ./...
 go build ./cmd/comail-space-host
+# Requires local Docker; uses only disposable synthetic data and owned resources.
+./scripts/test-official-spaces-alpha-mailbox.sh
 ```
 
 The historical synthetic proof, migrations, projection tests, lexicons, and

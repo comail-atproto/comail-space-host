@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
@@ -138,6 +139,36 @@ func TestReadAuthenticatedRepositoryRejectsDriftAndIncompleteCAR(t *testing.T) {
 					default:
 						return nil, errors.New("unexpected call")
 					}
+				}}
+			}}
+			client := newTestClient(t, &scriptedDoer{}, reader)
+			client.repoKeys = staticRepoKeyResolver{key: fixture.publicKey}
+			if _, err := client.ReadSourceAuthenticatedRepository(context.Background()); !errors.Is(err, ErrSnapshotVerification) {
+				t.Fatalf("error=%v", err)
+			}
+			if reader.closed != 1 {
+				t.Fatalf("closed=%d", reader.closed)
+			}
+		})
+	}
+}
+
+func TestReadAuthenticatedRepositoryRequiresExactSignedCommitType(t *testing.T) {
+	fixture := newRepoFixture(t)
+	for _, test := range []struct {
+		name   string
+		latest string
+	}{
+		{name: "missing", latest: strings.Replace(fixture.latestJSON, `"$type":"`+signedCommitType+`",`, "", 1)},
+		{name: "wrong", latest: strings.Replace(fixture.latestJSON, signedCommitType, "com.example.wrong#commit", 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &scriptedSource{newDoer: func(int) *scriptedDoer {
+				return &scriptedDoer{handle: func(request *http.Request, endpoint string) (*http.Response, error) {
+					if endpoint != getLatestCommitEndpoint {
+						t.Fatalf("endpoint=%q", endpoint)
+					}
+					return jsonResponse(request, http.StatusOK, test.latest), nil
 				}}
 			}}
 			client := newTestClient(t, &scriptedDoer{}, reader)
@@ -617,6 +648,7 @@ func encodeLatestJSON(t *testing.T, commit signedRepoCommit) string {
 	t.Helper()
 	value := struct {
 		Commit struct {
+			Type      string           `json:"$type"`
 			Version   int64            `json:"ver"`
 			Hash      lexutil.LexBytes `json:"hash"`
 			IKM       lexutil.LexBytes `json:"ikm"`
@@ -625,6 +657,7 @@ func encodeLatestJSON(t *testing.T, commit signedRepoCommit) string {
 			Revision  string           `json:"rev"`
 		} `json:"commit"`
 	}{}
+	value.Commit.Type = "com.atproto.space.defs#signedCommit"
 	value.Commit.Version = commit.Version
 	value.Commit.Hash = commit.Hash
 	value.Commit.IKM = commit.IKM
