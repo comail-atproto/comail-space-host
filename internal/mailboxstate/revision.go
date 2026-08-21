@@ -94,9 +94,9 @@ type OperationClaim struct {
 // repository verifier must bind all included maps and counts to snapshotID and
 // seal the value before Reduce can consume it.
 //
-// This foundation deliberately exposes no public constructor. Until a real
-// commit/CAR verifier is wired in, production code cannot self-assert snapshot
-// completeness by setting a boolean or count.
+// There is no public constructor. The official Spaces bridge constructs this
+// value only while reducing an opaque live-PDS source capability, so production
+// code cannot self-assert completeness with a boolean, count, or saved CAR.
 type VerifiedSnapshot struct {
 	snapshotID       string
 	logicalMessageID string

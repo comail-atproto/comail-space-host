@@ -49,6 +49,13 @@ OAuth/DPoP-authenticated PDS and verifying all three states agree. It is not
 registered in the service and returns no authority certificate or activation
 capability.
 
+The production-dark reducer accepts only that opaque live-source capability,
+not saved CARs or caller-supplied records. It proves the complete append-only
+message/folder graphs and emits a second sealed state capability. This is not
+yet projection-ready: the full CAR does not carry referenced RFC 5322 blob
+bytes, and every selected blob must be fetched from the exact source and pass
+byte/hash validation before any rebuild or activation gate can pass.
+
 The remaining credential gap is an unattended, exact-target OAuth broker and
 reauthorization lifecycle; the adapter may not persist the lab browser
 session. Real member mail therefore remains on unchanged Stalwart authority.
