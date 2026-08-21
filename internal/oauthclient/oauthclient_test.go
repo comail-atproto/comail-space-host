@@ -414,3 +414,14 @@ func TestCanonicalizeOriginNormalizesSchemeHostAndDefaultPort(t *testing.T) {
 		t.Fatalf("canonical origin = %q", got)
 	}
 }
+
+func TestCanonicalizedLoopbackHTTPUsesPort80(t *testing.T) {
+	origin, err := url.Parse("http://127.0.0.1:80/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalizeOrigin(origin)
+	if got := originDialPort(origin); got != "80" {
+		t.Fatalf("canonical HTTP dial port = %q", got)
+	}
+}

@@ -277,10 +277,7 @@ func NewPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string
 	origin.Path = ""
 	origin.RawPath = ""
 	cleanOrigin := strings.TrimSuffix(origin.String(), "/")
-	port := origin.Port()
-	if port == "" {
-		port = "443"
-	}
+	port := originDialPort(origin)
 	expectedAddress := net.JoinHostPort(origin.Hostname(), port)
 	dialTargets := []string{expectedAddress}
 	if origin.Scheme == "https" {
@@ -349,6 +346,16 @@ func canonicalizeOrigin(origin *url.URL) {
 	} else {
 		origin.Host = hostname
 	}
+}
+
+func originDialPort(origin *url.URL) string {
+	if port := origin.Port(); port != "" {
+		return port
+	}
+	if origin.Scheme == "http" {
+		return "80"
+	}
+	return "443"
 }
 
 func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
