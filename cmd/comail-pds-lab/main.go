@@ -101,6 +101,8 @@ func run(ctx context.Context, args []string) error {
 		return runOAuthProvision(ctx, args[1:])
 	case "oauth-credential-proof":
 		return runOAuthCredentialProof(ctx, args[1:])
+	case "oauth-revoke":
+		return runOAuthRevoke(ctx, args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage())
 		return nil
@@ -956,6 +958,54 @@ func validateCredentialProofInputs(sessionID string, timeout time.Duration) erro
 	return nil
 }
 
+func runOAuthRevoke(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("oauth-revoke", flag.ContinueOnError)
+	vaultPath := flags.String("vault", "", "absolute encrypted vault path")
+	keyPath := flags.String("key", "", "absolute vault key path")
+	did := flags.String("did", "", "exact account DID")
+	handle := flags.String("handle", "", "exact account handle")
+	origin := flags.String("origin", "", "exact Spaces PDS HTTPS origin")
+	spaceKey := flags.String("space-key", "primary", "exact mailbox space key")
+	sessionID := flags.String("session-id", "", "encrypted steady OAuth session ID")
+	callbackURL := flags.String("callback-url", "http://127.0.0.1:49153/oauth/callback", "exact loopback OAuth callback used for the session")
+	timeout := flags.Duration("timeout", time.Minute, "maximum revocation duration")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := validateOAuthRevokeInputs(*sessionID, *timeout); err != nil {
+		return err
+	}
+	vault, err := authvault.Open(*vaultPath, *keyPath)
+	if err != nil {
+		return err
+	}
+	manager, err := oauthclient.New(oauthclient.Config{
+		DID: *did, Handle: *handle, Origin: *origin, CallbackURL: *callbackURL, SpaceKey: *spaceKey,
+	}, vault)
+	if err != nil {
+		return err
+	}
+	revokeCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	if err := manager.RevokeAndDelete(revokeCtx, *sessionID); err != nil {
+		return err
+	}
+	return printJSON(map[string]any{
+		"version": 1, "remoteTokensRevoked": true, "encryptedLocalSessionDeleted": true,
+		"activationAttempted": false,
+	})
+}
+
+func validateOAuthRevokeInputs(sessionID string, timeout time.Duration) error {
+	if sessionID == "" || len(sessionID) > 1024 || strings.ContainsAny(sessionID, " \t\r\n\x00") {
+		return errors.New("oauth-revoke requires one bounded opaque session ID")
+	}
+	if timeout <= 0 || timeout > 5*time.Minute {
+		return errors.New("oauth-revoke timeout must be positive and no more than five minutes")
+	}
+	return nil
+}
+
 func writeExclusiveJSON(path string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -984,7 +1034,7 @@ func printJSON(value any) error {
 }
 
 func usageError() error {
-	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, certify-happyview-authority, capture-happyview-session, synthetic-proof, vault-init, oauth-login, oauth-provision, oauth-credential-proof, help")
+	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, certify-happyview-authority, capture-happyview-session, synthetic-proof, vault-init, oauth-login, oauth-provision, oauth-credential-proof, oauth-revoke, help")
 }
 
 func usage() string {
@@ -1007,6 +1057,7 @@ Commands:
   oauth-provision  Create/verify one exact space with a one-time OAuth grant
   oauth-credential-proof
                     Verify delegation and a fresh DPoP-bound space credential
+  oauth-revoke     Confirm remote steady-token revocation, then delete local state
 
 All source SQLite inputs must be explicit, closed, consistent snapshots. The
 rsky certificate applies only to the isolated pinned build plus lab patch.

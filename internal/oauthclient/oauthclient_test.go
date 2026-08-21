@@ -315,6 +315,154 @@ func TestRejectedSessionIsRevokedAndDeleted(t *testing.T) {
 	}
 }
 
+func TestSteadySessionRevokeConfirmsBothTokensBeforeLocalDeletion(t *testing.T) {
+	revocations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		revocations++
+		if request.Method != http.MethodPost || request.URL.Path != "/oauth/revoke" || request.Header.Get("DPoP") == "" {
+			t.Error("revocation request omitted its exact endpoint or DPoP proof")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	manager, store := newSteadyRevokeTestManager(t, server)
+	if err := manager.RevokeAndDelete(context.Background(), "steady-session"); err != nil {
+		t.Fatal(err)
+	}
+	if revocations != 2 {
+		t.Fatalf("revocations = %d, want access and refresh token revocation", revocations)
+	}
+	if !store.deleted {
+		t.Fatal("confirmed revoked session remained in local storage")
+	}
+}
+
+func TestSteadySessionRevokeRetainsEncryptedSessionWhenRemoteRevocationFails(t *testing.T) {
+	revocations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		revocations++
+		if revocations == 1 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	manager, store := newSteadyRevokeTestManager(t, server)
+	err := manager.RevokeAndDelete(context.Background(), "steady-session")
+	if err == nil || !strings.Contains(err.Error(), "retained for retry") {
+		t.Fatalf("revocation error = %v", err)
+	}
+	if revocations != 2 {
+		t.Fatalf("revocations = %d, want both remote attempts", revocations)
+	}
+	if store.deleted {
+		t.Fatal("session was deleted before remote revocation was confirmed")
+	}
+}
+
+func TestSteadySessionRevokeValidationFailuresHaveNoSideEffects(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Manager, *testAuthStore)
+	}{
+		{name: "wrong origin", mutate: func(_ *Manager, store *testAuthStore) {
+			store.session.HostURL = "https://wrong.example"
+		}},
+		{name: "wrong space grant", mutate: func(manager *Manager, _ *testAuthStore) {
+			manager.spaceKey = "secondary"
+		}},
+		{name: "widened grant", mutate: func(_ *Manager, store *testAuthStore) {
+			store.session.Scopes = append(store.session.Scopes, "transition:generic")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			revocations := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				revocations++
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			manager, store := newSteadyRevokeTestManager(t, server)
+			test.mutate(manager, store)
+			if err := manager.RevokeAndDelete(context.Background(), "steady-session"); err == nil {
+				t.Fatal("expected exact-session validation error")
+			}
+			if revocations != 0 {
+				t.Fatalf("validation failure attempted %d remote revocations", revocations)
+			}
+			if store.deleted {
+				t.Fatal("validation failure deleted the encrypted retry handle")
+			}
+		})
+	}
+}
+
+func TestSteadySessionRevokeRetainsSessionWithoutRevocationEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("missing endpoint attempted a remote request")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	manager, store := newSteadyRevokeTestManager(t, server)
+	store.session.AuthServerRevocationEndpoint = ""
+	if err := manager.RevokeAndDelete(context.Background(), "steady-session"); err == nil || !strings.Contains(err.Error(), "retained for retry") {
+		t.Fatalf("missing-endpoint error = %v", err)
+	}
+	if store.deleted {
+		t.Fatal("missing endpoint deleted the encrypted retry handle")
+	}
+}
+
+func TestSteadySessionRevokeReportsLocalDeletionFailureAfterRemoteConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	manager, store := newSteadyRevokeTestManager(t, server)
+	store.deleteErr = errors.New("synthetic delete failure")
+	err := manager.RevokeAndDelete(context.Background(), "steady-session")
+	if err == nil || !strings.Contains(err.Error(), "remote OAuth revocation confirmed") {
+		t.Fatalf("deletion error = %v", err)
+	}
+	if store.deleted {
+		t.Fatal("failed local deletion was reported as deleted")
+	}
+}
+
+func newSteadyRevokeTestManager(t *testing.T, server *httptest.Server) (*Manager, *testAuthStore) {
+	t.Helper()
+	privateKey, err := atcrypto.GeneratePrivateKeyP256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes, err := MailboxScopes(testMemberDID, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := oauth.ClientSessionData{
+		AccountDID: syntax.DID(testMemberDID), SessionID: "steady-session", HostURL: server.URL,
+		AuthServerURL: server.URL, AuthServerRevocationEndpoint: server.URL + "/oauth/revoke",
+		Scopes: scopes, AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh",
+		DPoPPrivateKeyMultibase: privateKey.Multibase(),
+	}
+	store := &testAuthStore{session: data}
+	config := oauth.NewLocalhostConfig("http://127.0.0.1:49153/oauth/callback", scopes)
+	app := oauth.NewClientApp(&config, store)
+	app.Client = server.Client()
+	client, origin, err := newPinnedHTTPClient(server.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Manager{
+		app: app, did: syntax.DID(testMemberDID), origin: origin, spaceKey: "primary",
+		client: client, profile: grantSteady, allowHTTP: true,
+	}, store
+}
+
 func TestProvisioningSessionDoerAcceptsOnlyProvisioningGrant(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -492,10 +640,11 @@ func newTestSessionDoer(t *testing.T, origin string) (*SessionDoer, *oauth.Clien
 }
 
 type testAuthStore struct {
-	session  oauth.ClientSessionData
-	deleted  bool
-	getErr   error
-	getCalls int
+	session   oauth.ClientSessionData
+	deleted   bool
+	deleteErr error
+	getErr    error
+	getCalls  int
 }
 
 func (s *testAuthStore) GetSession(_ context.Context, did syntax.DID, sessionID string) (*oauth.ClientSessionData, error) {
@@ -518,6 +667,9 @@ func (s *testAuthStore) SaveSession(_ context.Context, session oauth.ClientSessi
 func (s *testAuthStore) DeleteSession(_ context.Context, did syntax.DID, sessionID string) error {
 	if did != s.session.AccountDID || sessionID != s.session.SessionID {
 		return errors.New("wrong session deletion target")
+	}
+	if s.deleteErr != nil {
+		return s.deleteErr
 	}
 	s.deleted = true
 	return nil

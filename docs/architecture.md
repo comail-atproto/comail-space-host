@@ -138,6 +138,12 @@ separate 32-byte key; both files and their directory are private and updates
 are fsync/rename atomic under a cross-process lock. The production adapter
 never receives or persists these browser OAuth credentials.
 
+Explicit steady-session cleanup revalidates the exact DID, origin, space key,
+and grant before acting. It confirms remote revocation of both access and
+refresh tokens before deleting encrypted local state. If remote revocation is
+not confirmed, the encrypted session is retained for a bounded retry rather
+than discarding the only remaining revocation handle.
+
 The HappyView proof uses HappyView's own OAuth flow against the user's current
 PDS. Its signed HttpOnly dashboard cookie is captured through a random one-use
 URL on a second exact IPv4 loopback port (cookies are host-scoped, not
