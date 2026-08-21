@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/comail-atproto/comail-space-host/internal/repository"
 )
 
 const testMemberDID = "did:plc:rfwhywgeym2ek7ioeyxkvsn6"
@@ -189,6 +191,27 @@ func TestSessionDoerFailsClosedInsteadOfRefreshingUnverifiableScope(t *testing.T
 	}
 	if session.Data.AccessToken != "opaque-access" || session.Data.RefreshToken != "must-not-refresh" {
 		t.Fatal("OAuth tokens changed despite fail-closed refresh policy")
+	}
+}
+
+func TestSessionDoerRejectsForeignHostOverrideBeforeAuthorization(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	doer, _ := newTestSessionDoer(t, server.URL)
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/xrpc/com.atproto.space.listRecords", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "foreign.example"
+	if _, err := doer.Do(context.Background(), request, "com.atproto.space.listRecords"); !errors.Is(err, repository.ErrTarget) {
+		t.Fatalf("host override error = %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("authorized requests = %d", requests)
 	}
 }
 
@@ -378,5 +401,16 @@ func TestPinnedHTTPClientAllowsOnlyExactLoopbackOriginAndRefusesRedirect(t *test
 	other, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1:1/escape", nil)
 	if _, err := client.Do(other); err == nil || !strings.Contains(err.Error(), "refused") {
 		t.Fatalf("wrong-origin error = %v", err)
+	}
+}
+
+func TestCanonicalizeOriginNormalizesSchemeHostAndDefaultPort(t *testing.T) {
+	origin, err := url.Parse("HTTPS://SPACES.EXAMPLE:443/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalizeOrigin(origin)
+	if got := origin.String(); got != "https://spaces.example/" {
+		t.Fatalf("canonical origin = %q", got)
 	}
 }

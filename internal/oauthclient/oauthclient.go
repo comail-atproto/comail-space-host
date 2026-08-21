@@ -57,7 +57,7 @@ func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
 	if err != nil || callback.Scheme != "http" || callback.Hostname() != "127.0.0.1" || callback.Port() == "" || callback.Path != "/oauth/callback" || callback.User != nil || callback.RawQuery != "" || callback.Fragment != "" {
 		return nil, errors.New("oauthclient: callback must be exact http://127.0.0.1:PORT/oauth/callback")
 	}
-	client, origin, err := newPinnedHTTPClient(cfg.Origin, cfg.AllowHTTP)
+	client, origin, err := NewPinnedHTTPClient(cfg.Origin, cfg.AllowHTTP)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +173,9 @@ func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string
 	if req == nil || req.URL == nil || !sameOrigin(req.URL, d.origin) {
 		return nil, repository.ErrTarget
 	}
+	if req.Host != "" && !strings.EqualFold(req.Host, req.URL.Host) {
+		return nil, repository.ErrTarget
+	}
 	if _, err := syntax.ParseNSID(endpoint); err != nil {
 		return nil, fmt.Errorf("oauthclient: parse endpoint: %w", err)
 	}
@@ -223,7 +226,8 @@ func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string
 		if err != nil {
 			return nil, err
 		}
-		if resp == nil || resp.Request == nil || !sameOrigin(resp.Request.URL, d.origin) {
+		if resp == nil || resp.Request == nil || !sameOrigin(resp.Request.URL, d.origin) ||
+			(resp.Request.Host != "" && !strings.EqualFold(resp.Request.Host, resp.Request.URL.Host)) {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
@@ -254,13 +258,17 @@ func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string
 	return nil, errors.New("oauthclient: exhausted PDS DPoP nonce retry")
 }
 
-func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
+// NewPinnedHTTPClient returns a no-proxy, no-redirect client bound to the
+// exact resolved addresses and TLS hostname of one clean origin.
+func NewPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
 	origin, err := url.Parse(rawOrigin)
 	if err != nil || origin.Hostname() == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
 		return nil, "", errors.New("oauthclient: provider must be a clean origin")
 	}
+	hadExplicitPort := origin.Port() != ""
+	canonicalizeOrigin(origin)
 	if origin.Scheme == "http" {
-		if !allowHTTP || origin.Port() == "" || net.ParseIP(origin.Hostname()) == nil || !net.ParseIP(origin.Hostname()).IsLoopback() {
+		if !allowHTTP || !hadExplicitPort || net.ParseIP(origin.Hostname()) == nil || !net.ParseIP(origin.Hostname()).IsLoopback() {
 			return nil, "", errors.New("oauthclient: HTTP is allowed only for an explicit loopback test origin")
 		}
 	} else if origin.Scheme != "https" {
@@ -327,6 +335,26 @@ func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string
 	return client, cleanOrigin, nil
 }
 
+func canonicalizeOrigin(origin *url.URL) {
+	origin.Scheme = strings.ToLower(origin.Scheme)
+	hostname := strings.ToLower(origin.Hostname())
+	port := origin.Port()
+	if (origin.Scheme == "https" && port == "443") || (origin.Scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		origin.Host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		origin.Host = "[" + hostname + "]"
+	} else {
+		origin.Host = hostname
+	}
+}
+
+func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
+	return NewPinnedHTTPClient(rawOrigin, allowHTTP)
+}
+
 func sameOriginString(raw, expected string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && sameOrigin(u, expected)
@@ -334,7 +362,7 @@ func sameOriginString(raw, expected string) bool {
 
 func sameOrigin(u *url.URL, expected string) bool {
 	want, err := url.Parse(expected)
-	if err != nil || u == nil {
+	if err != nil || u == nil || u.User != nil || u.Opaque != "" || u.Host == "" || u.Fragment != "" {
 		return false
 	}
 	return strings.EqualFold(u.Scheme, want.Scheme) && strings.EqualFold(u.Hostname(), want.Hostname()) && effectivePort(u) == effectivePort(want)
