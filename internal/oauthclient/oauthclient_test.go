@@ -212,6 +212,26 @@ func TestSessionDoerRejectsForeignHostOverrideBeforeAuthorization(t *testing.T) 
 	}
 }
 
+func TestSessionDoerRejectsEndpointPathDriftBeforeAuthorization(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	doer, _ := newTestSessionDoer(t, server.URL)
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/xrpc/com.atproto.space.listRecords", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doer.Do(context.Background(), request, "com.atproto.space.getDelegationToken"); !errors.Is(err, repository.ErrTarget) {
+		t.Fatalf("endpoint drift error = %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("authorized requests = %d", requests)
+	}
+}
+
 func TestSessionDoerRetriesOneFreshProofForNewDPoPNonce(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

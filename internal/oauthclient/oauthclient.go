@@ -240,8 +240,8 @@ func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string
 	if req.Host != "" && !strings.EqualFold(req.Host, req.URL.Host) {
 		return nil, repository.ErrTarget
 	}
-	if _, err := syntax.ParseNSID(endpoint); err != nil {
-		return nil, fmt.Errorf("oauthclient: parse endpoint: %w", err)
+	if _, err := syntax.ParseNSID(endpoint); err != nil || req.URL.EscapedPath() != "/xrpc/"+endpoint {
+		return nil, repository.ErrTarget
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
