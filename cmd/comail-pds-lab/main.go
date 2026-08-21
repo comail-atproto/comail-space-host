@@ -44,6 +44,22 @@ type proofEvidence struct {
 	Passed     bool              `json:"passed"`
 }
 
+type oauthCallbackGate struct {
+	state atomic.Uint32
+}
+
+func (g *oauthCallbackGate) begin() bool {
+	return g.state.CompareAndSwap(0, 1)
+}
+
+func (g *oauthCallbackGate) finish(err error) {
+	if errors.Is(err, oauthclient.ErrInvalidCallback) {
+		g.state.CompareAndSwap(1, 0)
+		return
+	}
+	g.state.Store(2)
+}
+
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "comail-pds-lab:", err)
@@ -78,6 +94,8 @@ func run(ctx context.Context, args []string) error {
 		return runVaultInit(args[1:])
 	case "oauth-login":
 		return runOAuthLogin(ctx, args[1:])
+	case "oauth-provision":
+		return runOAuthProvision(ctx, args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage())
 		return nil
@@ -677,7 +695,7 @@ func runOAuthLogin(ctx context.Context, args []string) error {
 		err       error
 	}
 	result := make(chan loginResult, 1)
-	var completed atomic.Bool
+	var callbackGate oauthCallbackGate
 	server := &http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -685,18 +703,20 @@ func runOAuthLogin(ctx context.Context, args []string) error {
 				http.NotFound(w, request)
 				return
 			}
-			if completed.Load() {
+			if !callbackGate.begin() {
 				http.Error(w, "OAuth callback already completed", http.StatusConflict)
 				return
 			}
 			session, finishErr := manager.Finish(request.Context(), request.URL.Query())
+			callbackGate.finish(finishErr)
 			if finishErr != nil {
 				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte("Comail PDS lab rejected this OAuth callback. The listener is still waiting.\n"))
-				return
-			}
-			if !completed.CompareAndSwap(false, true) {
-				http.Error(w, "OAuth callback already completed", http.StatusConflict)
+				if errors.Is(finishErr, oauthclient.ErrInvalidCallback) {
+					_, _ = w.Write([]byte("Comail PDS lab rejected an invalid OAuth callback. The listener is still waiting.\n"))
+					return
+				}
+				_, _ = w.Write([]byte("Comail PDS lab rejected this OAuth session. You may close this tab.\n"))
+				result <- loginResult{err: finishErr}
 				return
 			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -741,6 +761,113 @@ func runOAuthLogin(ctx context.Context, args []string) error {
 	}
 }
 
+func runOAuthProvision(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("oauth-provision", flag.ContinueOnError)
+	vaultPath := flags.String("vault", "", "absolute encrypted vault path")
+	keyPath := flags.String("key", "", "absolute vault key path")
+	did := flags.String("did", "", "exact account DID")
+	handle := flags.String("handle", "", "exact account handle")
+	origin := flags.String("origin", "", "exact Spaces PDS HTTPS origin")
+	spaceKey := flags.String("space-key", "primary", "exact mailbox space key")
+	callbackURL := flags.String("callback-url", "http://127.0.0.1:49153/oauth/callback", "exact loopback OAuth callback")
+	timeout := flags.Duration("timeout", 5*time.Minute, "maximum time to wait for browser callback")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	vault, err := authvault.Open(*vaultPath, *keyPath)
+	if err != nil {
+		return err
+	}
+	provisioner, err := oauthclient.NewProvisioner(oauthclient.Config{
+		DID: *did, Handle: *handle, Origin: *origin, CallbackURL: *callbackURL, SpaceKey: *spaceKey,
+	}, vault)
+	if err != nil {
+		return err
+	}
+	callback, err := url.Parse(*callbackURL)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", callback.Host)
+	if err != nil {
+		return fmt.Errorf("listen for OAuth callback: %w", err)
+	}
+	defer listener.Close()
+	type provisionResult struct {
+		spaceURI string
+		created  bool
+		err      error
+	}
+	result := make(chan provisionResult, 1)
+	var callbackGate oauthCallbackGate
+	server := &http.Server{
+		ReadHeaderTimeout: 5 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if request.Method != http.MethodGet || request.URL.Path != callback.Path {
+				http.NotFound(w, request)
+				return
+			}
+			if !callbackGate.begin() {
+				http.Error(w, "OAuth callback already completed", http.StatusConflict)
+				return
+			}
+			provisioned, finishErr := provisioner.Finish(request.Context(), request.URL.Query())
+			callbackGate.finish(finishErr)
+			if finishErr != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				if errors.Is(finishErr, oauthclient.ErrInvalidCallback) {
+					_, _ = w.Write([]byte("Comail rejected an invalid OAuth callback. The listener is still waiting.\n"))
+					return
+				}
+				_, _ = w.Write([]byte("Comail rejected provisioning and attempted one-time OAuth cleanup. You may close this tab.\n"))
+				result <- provisionResult{err: finishErr}
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("Comail mailbox space provisioned and one-time OAuth cleaned up. You may close this tab.\n"))
+			result <- provisionResult{spaceURI: provisioned.SpaceURI, created: provisioned.Created}
+		}),
+	}
+	serveErr := make(chan error, 1)
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+		}
+	}()
+	authorizeURL, err := provisioner.Start(ctx)
+	if err != nil {
+		_ = server.Close()
+		return err
+	}
+	if err := printJSON(map[string]any{
+		"version": 1, "authorizationUrl": authorizeURL,
+		"next": "Open this URL in a browser and approve the exact one-time mailbox-space creation grant.",
+	}); err != nil {
+		_ = server.Close()
+		return err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	select {
+	case got := <-result:
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+		if got.err != nil {
+			return got.err
+		}
+		return printJSON(map[string]any{
+			"version": 1, "provisioned": true, "did": *did, "spaceUri": got.spaceURI,
+			"created": got.created, "oneTimeSessionRevokedAndDeleted": true,
+		})
+	case err := <-serveErr:
+		return err
+	case <-waitCtx.Done():
+		_ = server.Close()
+		return fmt.Errorf("OAuth callback wait ended: %w", waitCtx.Err())
+	}
+}
+
 func writeExclusiveJSON(path string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -769,7 +896,7 @@ func printJSON(value any) error {
 }
 
 func usageError() error {
-	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, certify-happyview-authority, capture-happyview-session, synthetic-proof, vault-init, oauth-login, help")
+	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, certify-happyview-authority, capture-happyview-session, synthetic-proof, vault-init, oauth-login, oauth-provision, help")
 }
 
 func usage() string {
@@ -789,6 +916,7 @@ Commands:
   synthetic-proof  Migrate synthetic mail and rebuild a fresh SQLite projection
   vault-init       Create an encrypted OAuth session vault and key
   oauth-login      Obtain and encrypt an exact mailbox-space OAuth grant
+  oauth-provision  Create/verify one exact space with a one-time OAuth grant
 
 All source SQLite inputs must be explicit, closed, consistent snapshots. The
 rsky certificate applies only to the isolated pinned build plus lab patch.

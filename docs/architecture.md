@@ -115,19 +115,28 @@ would keep it as a rollback artifact under the existing retention policy.
 
 ## OAuth session boundary
 
-The lab requests one exact `space:email.atmos.mailbox` grant bound to
-`authority=self` and one explicit space key. Record mutations are restricted
-to the three mailbox collections; whole-space read is requested because the
-pinned provider's referenced-blob read path currently authorizes an
-unqualified read request. Blob upload is limited to `message/rfc822`.
+The official Spaces profile uses two separate browser authorizations. A
+one-time provisioning grant is bound to the exact authority DID and exact
+mailbox key and carries only `action=read_self&manage=create`. It creates or
+reconciles a member-list/open-app space, proves that the fresh space has zero
+explicit members (the owner is implicit), then revokes both OAuth tokens and
+deletes the encrypted local session before reporting success.
+
+The steady grant is separately bound to that exact DID and key. It carries
+only `read` and `create` over the five append-only mailbox collections plus a
+`message/rfc822` blob scope. It has no wildcard, update, delete, or space
+management permission. Refresh is fail-closed because provider-normalized
+replacement scopes cannot be independently verified; an expired or invalid
+token requires interactive reauthorization.
 
 OAuth discovery, token exchange, refresh, and authenticated XRPC calls use one
 operator-pinned origin. HTTPS addresses are resolved once, private/link-local
 answers are rejected, proxies are disabled, TLS uses the original hostname,
 and redirects are refused. The callback is an exact IPv4 loopback URL.
-Session and pending-flow state are stored in an AES-256-GCM file with a separate
-32-byte key; both files and their directory are private and updates are
-fsync/rename atomic under a cross-process lock.
+Session and pending-flow state are stored in an AES-256-GCM file with a
+separate 32-byte key; both files and their directory are private and updates
+are fsync/rename atomic under a cross-process lock. The production adapter
+never receives or persists these browser OAuth credentials.
 
 The HappyView proof uses HappyView's own OAuth flow against the user's current
 PDS. Its signed HttpOnly dashboard cookie is captured through a random one-use

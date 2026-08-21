@@ -295,6 +295,148 @@ func TestRejectedSessionIsRevokedAndDeleted(t *testing.T) {
 	}
 }
 
+func TestProvisioningSessionDoerAcceptsOnlyProvisioningGrant(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	privateKey, _ := atcrypto.GeneratePrivateKeyP256()
+	scopes, _ := ProvisioningScopes(testMemberDID, "primary")
+	client, origin, err := newPinnedHTTPClient(server.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &oauth.ClientSession{
+		Data: &oauth.ClientSessionData{
+			AccountDID: syntax.DID(testMemberDID), HostURL: origin, Scopes: scopes,
+			AccessToken: "synthetic-provisioning-access",
+		},
+		DPoPPrivateKey: privateKey,
+	}
+	doer := &SessionDoer{
+		session: session, client: client, origin: origin, did: testMemberDID,
+		spaceKey: "primary", profile: grantProvisioning,
+	}
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/xrpc/com.atproto.simplespace.createSpace", strings.NewReader(`{}`))
+	response, err := doer.Do(context.Background(), request, "com.atproto.simplespace.createSpace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	steady, _ := MailboxScopes(testMemberDID, "primary")
+	session.Data.Scopes = steady
+	if _, err := doer.Do(context.Background(), request, "com.atproto.simplespace.createSpace"); !errors.Is(err, repository.ErrUnauthorized) {
+		t.Fatalf("steady grant in provisioner error = %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("authorized requests = %d", requests)
+	}
+}
+
+func TestProvisionerRevokesAndDeletesOneTimeSessionAfterSuccess(t *testing.T) {
+	revocations := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/oauth/revoke":
+			revocations++
+			w.WriteHeader(http.StatusOK)
+		case "/xrpc/com.atproto.simplespace.createSpace":
+			_, _ = io.WriteString(w, `{"uri":"at://`+testMemberDID+`/space/email.atmos.mailbox/primary"}`)
+		case "/xrpc/com.atproto.simplespace.getSpace":
+			_, _ = io.WriteString(w, `{"uri":"at://`+testMemberDID+`/space/email.atmos.mailbox/primary","policy":{"$type":"com.atproto.simplespace.defs#memberListPolicy"},"appAccess":{"$type":"com.atproto.simplespace.defs#open"}}`)
+		case "/xrpc/com.atproto.simplespace.listMembers":
+			_, _ = io.WriteString(w, `{"members":[]}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	privateKey, _ := atcrypto.GeneratePrivateKeyP256()
+	scopes, _ := ProvisioningScopes(testMemberDID, "primary")
+	data := oauth.ClientSessionData{
+		AccountDID: syntax.DID(testMemberDID), SessionID: "one-time-provisioning", HostURL: server.URL,
+		AuthServerURL: server.URL, AuthServerRevocationEndpoint: server.URL + "/oauth/revoke",
+		Scopes: scopes, AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh",
+		DPoPPrivateKeyMultibase: privateKey.Multibase(),
+	}
+	store := &testAuthStore{session: data}
+	config := oauth.NewLocalhostConfig("http://127.0.0.1:49153/oauth/callback", scopes)
+	app := oauth.NewClientApp(&config, store)
+	app.Client = server.Client()
+	client, origin, err := newPinnedHTTPClient(server.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		app: app, did: syntax.DID(testMemberDID), origin: origin, spaceKey: "primary",
+		client: client, profile: grantProvisioning, allowHTTP: true,
+	}
+	provisioner := &Provisioner{manager: manager}
+	store.getErr = errors.New("synthetic immediate reload failure")
+	session, err := manager.sessionFromCallbackData(&data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := provisioner.complete(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SpaceURI != "at://"+testMemberDID+"/space/email.atmos.mailbox/primary" || !result.Created {
+		t.Fatalf("result = %#v", result)
+	}
+	if revocations != 2 || !store.deleted {
+		t.Fatalf("revocations=%d deleted=%v", revocations, store.deleted)
+	}
+	if store.getCalls != 0 {
+		t.Fatalf("callback session reloaded from store %d times", store.getCalls)
+	}
+}
+
+func TestProvisionerCleansUpOneTimeSessionAfterProvisioningFailure(t *testing.T) {
+	revocations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/oauth/revoke" {
+			revocations++
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	privateKey, _ := atcrypto.GeneratePrivateKeyP256()
+	scopes, _ := ProvisioningScopes(testMemberDID, "primary")
+	data := oauth.ClientSessionData{
+		AccountDID: syntax.DID(testMemberDID), SessionID: "failed-provisioning", HostURL: server.URL,
+		AuthServerURL: server.URL, AuthServerRevocationEndpoint: server.URL + "/oauth/revoke",
+		Scopes: scopes, AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh",
+		DPoPPrivateKeyMultibase: privateKey.Multibase(),
+	}
+	store := &testAuthStore{session: data}
+	config := oauth.NewLocalhostConfig("http://127.0.0.1:49153/oauth/callback", scopes)
+	app := oauth.NewClientApp(&config, store)
+	app.Client = server.Client()
+	client, origin, err := newPinnedHTTPClient(server.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioner := &Provisioner{manager: &Manager{
+		app: app, did: syntax.DID(testMemberDID), origin: origin, spaceKey: "primary",
+		client: client, profile: grantProvisioning, allowHTTP: true,
+	}}
+	session := &oauth.ClientSession{Data: &data, Config: &config, Client: server.Client(), DPoPPrivateKey: privateKey}
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := provisioner.complete(canceledCtx, session); err == nil {
+		t.Fatal("expected provisioning failure")
+	}
+	if revocations != 2 || !store.deleted {
+		t.Fatalf("revocations=%d deleted=%v", revocations, store.deleted)
+	}
+}
+
 func newTestSessionDoer(t *testing.T, origin string) (*SessionDoer, *oauth.ClientSession) {
 	t.Helper()
 	privateKey, err := atcrypto.GeneratePrivateKeyP256()
@@ -330,11 +472,17 @@ func newTestSessionDoer(t *testing.T, origin string) (*SessionDoer, *oauth.Clien
 }
 
 type testAuthStore struct {
-	session oauth.ClientSessionData
-	deleted bool
+	session  oauth.ClientSessionData
+	deleted  bool
+	getErr   error
+	getCalls int
 }
 
 func (s *testAuthStore) GetSession(_ context.Context, did syntax.DID, sessionID string) (*oauth.ClientSessionData, error) {
+	s.getCalls++
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 	if s.deleted || did != s.session.AccountDID || sessionID != s.session.SessionID {
 		return nil, errors.New("session not found")
 	}

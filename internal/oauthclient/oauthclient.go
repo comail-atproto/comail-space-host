@@ -13,13 +13,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/spaceprovision"
 )
 
-var ErrReauthorizationRequired = errors.New("oauthclient: interactive reauthorization required")
+var (
+	ErrInvalidCallback         = errors.New("oauthclient: invalid OAuth callback")
+	ErrReauthorizationRequired = errors.New("oauthclient: interactive reauthorization required")
+)
 
 const maxDPoPNonceBytes = 1024
 
@@ -33,15 +38,28 @@ type Config struct {
 }
 
 type Manager struct {
-	app      *oauth.ClientApp
-	did      syntax.DID
-	handle   syntax.Handle
-	origin   string
-	spaceKey string
-	client   *http.Client
+	app       *oauth.ClientApp
+	did       syntax.DID
+	handle    syntax.Handle
+	origin    string
+	spaceKey  string
+	client    *http.Client
+	profile   grantProfile
+	allowHTTP bool
 }
 
+type grantProfile uint8
+
+const (
+	grantSteady grantProfile = iota
+	grantProvisioning
+)
+
 func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
+	return newManager(cfg, store, grantSteady)
+}
+
+func newManager(cfg Config, store oauth.ClientAuthStore, profile grantProfile) (*Manager, error) {
 	if store == nil {
 		return nil, errors.New("oauthclient: encrypted auth store is required")
 	}
@@ -61,7 +79,12 @@ func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	scopes, err := MailboxScopes(did.String(), cfg.SpaceKey)
+	var scopes []string
+	if profile == grantProvisioning {
+		scopes, err = ProvisioningScopes(did.String(), cfg.SpaceKey)
+	} else {
+		scopes, err = MailboxScopes(did.String(), cfg.SpaceKey)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +100,10 @@ func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
 		},
 	})
 	app.Dir = directory
-	return &Manager{app: app, did: did, handle: handle, origin: origin, spaceKey: cfg.SpaceKey, client: client}, nil
+	return &Manager{
+		app: app, did: did, handle: handle, origin: origin, spaceKey: cfg.SpaceKey,
+		client: client, profile: profile, allowHTTP: cfg.AllowHTTP,
+	}, nil
 }
 
 func (m *Manager) Start(ctx context.Context) (string, error) {
@@ -93,22 +119,58 @@ func (m *Manager) Start(ctx context.Context) (string, error) {
 }
 
 func (m *Manager) Finish(ctx context.Context, values url.Values) (*oauth.ClientSession, error) {
+	if m == nil || m.profile != grantSteady {
+		return nil, errors.New("oauthclient: steady OAuth manager is required")
+	}
+	return m.finishSession(ctx, values)
+}
+
+func (m *Manager) finishSession(ctx context.Context, values url.Values) (*oauth.ClientSession, error) {
 	data, err := m.app.ProcessCallback(ctx, values)
 	if err != nil {
-		return nil, fmt.Errorf("oauthclient: process callback: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidCallback, err)
+	}
+	session, sessionErr := m.sessionFromCallbackData(data)
+	if sessionErr != nil {
+		rejection := fmt.Errorf("%w: reconstruct persisted OAuth session: %v", repository.ErrUnauthorized, sessionErr)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, nil, rejection)
 	}
 	if data.AccountDID != m.did || !sameOriginString(data.HostURL, m.origin) {
 		rejection := fmt.Errorf("%w: OAuth subject or resource server mismatch", repository.ErrTarget)
-		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, nil, rejection)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, session, rejection)
 	}
-	if err := ValidateSteadyGrant(data.Scopes, m.did.String(), m.spaceKey); err != nil {
+	if err := m.validateGrant(data.Scopes); err != nil {
 		rejection := fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
-		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, nil, rejection)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, session, rejection)
 	}
-	return m.Resume(ctx, data.SessionID)
+	return session, nil
+}
+
+func (m *Manager) sessionFromCallbackData(data *oauth.ClientSessionData) (*oauth.ClientSession, error) {
+	if data == nil {
+		return nil, errors.New("oauthclient: callback supplied no session data")
+	}
+	privateKey, err := atcrypto.ParsePrivateMultibase(data.DPoPPrivateKeyMultibase)
+	if err != nil {
+		return nil, err
+	}
+	session := &oauth.ClientSession{
+		Client: m.app.Client, Config: m.app.Config, Data: data, DPoPPrivateKey: privateKey,
+	}
+	session.PersistSessionCallback = func(ctx context.Context, updated *oauth.ClientSessionData) {
+		_ = m.app.Store.SaveSession(ctx, *updated)
+	}
+	return session, nil
 }
 
 func (m *Manager) Resume(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
+	if m == nil || m.profile != grantSteady {
+		return nil, errors.New("oauthclient: steady OAuth manager is required")
+	}
+	return m.resumeSession(ctx, sessionID)
+}
+
+func (m *Manager) resumeSession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
 	if sessionID == "" {
 		return nil, errors.New("oauthclient: session ID is required")
 	}
@@ -120,44 +182,45 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*oauth.ClientSe
 		rejection := fmt.Errorf("%w: resumed OAuth session target mismatch", repository.ErrTarget)
 		return nil, m.rejectSession(ctx, m.did, sessionID, session, rejection)
 	}
-	if err := ValidateSteadyGrant(session.Data.Scopes, m.did.String(), m.spaceKey); err != nil {
+	if err := m.validateGrant(session.Data.Scopes); err != nil {
 		rejection := fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
 		return nil, m.rejectSession(ctx, m.did, sessionID, session, rejection)
 	}
 	return session, nil
 }
 
-func (m *Manager) rejectSession(ctx context.Context, storageDID syntax.DID, sessionID string, session *oauth.ClientSession, rejection error) error {
+func (m *Manager) rejectSession(_ context.Context, storageDID syntax.DID, sessionID string, session *oauth.ClientSession, rejection error) error {
 	var resumeErr error
 	if session == nil {
-		session, resumeErr = m.app.ResumeSession(ctx, storageDID, sessionID)
+		resumeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		session, resumeErr = m.app.ResumeSession(resumeCtx, storageDID, sessionID)
+		cancel()
 	}
-	var revokeErr error
-	if session == nil {
-		revokeErr = errors.New("oauthclient: could not load rejected session for remote revocation")
-	} else if session.Data.AuthServerRevocationEndpoint == "" {
-		revokeErr = errors.New("oauthclient: OAuth server supplied no revocation endpoint for rejected session")
-	} else if err := session.RevokeSession(ctx); err != nil {
-		revokeErr = fmt.Errorf("oauthclient: revoke rejected OAuth session: %w", err)
-	}
-	deleteErr := m.app.Store.DeleteSession(ctx, storageDID, sessionID)
-	if deleteErr != nil {
-		deleteErr = fmt.Errorf("oauthclient: delete rejected OAuth session: %w", deleteErr)
-	}
+	cleanupErr := m.cleanupSession(context.Background(), storageDID, sessionID, session)
 	if resumeErr != nil {
 		resumeErr = fmt.Errorf("oauthclient: resume rejected OAuth session for cleanup: %w", resumeErr)
 	}
-	return errors.Join(rejection, resumeErr, revokeErr, deleteErr)
+	return errors.Join(rejection, resumeErr, cleanupErr)
 }
 
 func (m *Manager) Doer(session *oauth.ClientSession) (*SessionDoer, error) {
+	if m == nil || m.profile != grantSteady {
+		return nil, repository.ErrUnauthorized
+	}
+	return m.sessionDoer(session)
+}
+
+func (m *Manager) sessionDoer(session *oauth.ClientSession) (*SessionDoer, error) {
 	if session == nil || session.Data == nil || session.Data.AccountDID != m.did || !sameOriginString(session.Data.HostURL, m.origin) {
 		return nil, repository.ErrTarget
 	}
-	if err := ValidateSteadyGrant(session.Data.Scopes, m.did.String(), m.spaceKey); err != nil {
+	if err := m.validateGrant(session.Data.Scopes); err != nil {
 		return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
 	}
-	return &SessionDoer{session: session, client: m.client, origin: m.origin, did: m.did.String(), spaceKey: m.spaceKey}, nil
+	return &SessionDoer{
+		session: session, client: m.client, origin: m.origin, did: m.did.String(),
+		spaceKey: m.spaceKey, profile: m.profile,
+	}, nil
 }
 
 type SessionDoer struct {
@@ -167,6 +230,7 @@ type SessionDoer struct {
 	origin   string
 	did      string
 	spaceKey string
+	profile  grantProfile
 }
 
 func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string) (*http.Response, error) {
@@ -184,7 +248,7 @@ func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string
 	if d.session == nil || d.session.Data == nil {
 		return nil, repository.ErrTarget
 	}
-	if err := ValidateSteadyGrant(d.session.Data.Scopes, d.did, d.spaceKey); err != nil {
+	if err := d.validateGrant(d.session.Data.Scopes); err != nil {
 		return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
 	}
 	accessToken, originalNonce := d.session.GetHostAccessData()
@@ -233,7 +297,7 @@ func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string
 			}
 			return nil, repository.ErrTarget
 		}
-		if err := ValidateSteadyGrant(d.session.Data.Scopes, d.did, d.spaceKey); err != nil {
+		if err := d.validateGrant(d.session.Data.Scopes); err != nil {
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
 		}
@@ -256,6 +320,99 @@ func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string
 		d.session.UpdateHostDPoPNonce(ctx, newNonce)
 	}
 	return nil, errors.New("oauthclient: exhausted PDS DPoP nonce retry")
+}
+
+func (m *Manager) validateGrant(scopes []string) error {
+	if m.profile == grantProvisioning {
+		return ValidateProvisioningGrant(scopes, m.did.String(), m.spaceKey)
+	}
+	return ValidateSteadyGrant(scopes, m.did.String(), m.spaceKey)
+}
+
+func (d *SessionDoer) validateGrant(scopes []string) error {
+	if d.profile == grantProvisioning {
+		return ValidateProvisioningGrant(scopes, d.did, d.spaceKey)
+	}
+	return ValidateSteadyGrant(scopes, d.did, d.spaceKey)
+}
+
+func (m *Manager) cleanupSession(_ context.Context, did syntax.DID, sessionID string, session *oauth.ClientSession) error {
+	var revokeErr error
+	if session == nil {
+		revokeErr = errors.New("oauthclient: could not load OAuth session for remote revocation")
+	} else if session.Data == nil || session.Data.AuthServerRevocationEndpoint == "" {
+		revokeErr = errors.New("oauthclient: OAuth server supplied no revocation endpoint")
+	} else {
+		revokeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := session.RevokeSession(revokeCtx); err != nil {
+			revokeErr = fmt.Errorf("oauthclient: revoke OAuth session: %w", err)
+		}
+		cancel()
+	}
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	deleteErr := m.app.Store.DeleteSession(deleteCtx, did, sessionID)
+	cancel()
+	if deleteErr != nil {
+		deleteErr = fmt.Errorf("oauthclient: delete local OAuth session: %w", deleteErr)
+	}
+	return errors.Join(revokeErr, deleteErr)
+}
+
+// Provisioner owns one isolated exact-skey create grant. The session never
+// escapes: Finish creates/verifies the predetermined mailbox and always
+// attempts remote revocation plus encrypted local deletion before returning.
+type Provisioner struct {
+	manager *Manager
+}
+
+func NewProvisioner(cfg Config, store oauth.ClientAuthStore) (*Provisioner, error) {
+	manager, err := newManager(cfg, store, grantProvisioning)
+	if err != nil {
+		return nil, err
+	}
+	return &Provisioner{manager: manager}, nil
+}
+
+func (p *Provisioner) Start(ctx context.Context) (string, error) {
+	if p == nil || p.manager == nil {
+		return "", errors.New("oauthclient: provisioning manager is required")
+	}
+	return p.manager.Start(ctx)
+}
+
+func (p *Provisioner) Finish(ctx context.Context, values url.Values) (spaceprovision.Result, error) {
+	if p == nil || p.manager == nil {
+		return spaceprovision.Result{}, errors.New("oauthclient: provisioning manager is required")
+	}
+	session, err := p.manager.finishSession(ctx, values)
+	if err != nil {
+		return spaceprovision.Result{}, err
+	}
+	return p.complete(ctx, session)
+}
+
+func (p *Provisioner) complete(ctx context.Context, session *oauth.ClientSession) (spaceprovision.Result, error) {
+	if session == nil || session.Data == nil {
+		return spaceprovision.Result{}, repository.ErrTarget
+	}
+	doer, doerErr := p.manager.sessionDoer(session)
+	var result spaceprovision.Result
+	var provisionErr error
+	if doerErr == nil {
+		client, err := spaceprovision.New(spaceprovision.Config{
+			Origin: p.manager.origin, DID: p.manager.did.String(), SpaceKey: p.manager.spaceKey,
+			AllowHTTP: p.manager.allowHTTP,
+		}, doer)
+		if err != nil {
+			provisionErr = err
+		} else {
+			result, provisionErr = client.Ensure(ctx)
+		}
+	} else {
+		provisionErr = doerErr
+	}
+	cleanupErr := p.manager.cleanupSession(ctx, p.manager.did, session.Data.SessionID, session)
+	return result, errors.Join(provisionErr, cleanupErr)
 }
 
 // NewPinnedHTTPClient returns a no-proxy, no-redirect client bound to the
