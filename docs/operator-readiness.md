@@ -41,8 +41,13 @@ narrow steady member OAuth capability for blob/create requests, forces
 `validate=true`, admits only the five v3 append-only collections, checks exact
 member-authored receipts, and uses fresh delegated DPoP credentials for
 bounded reads and raw CAR recovery.
-It is not registered in the service and returns no certified snapshot or
-authority capability.
+The pinned alpha signature does not cover the repo hash with
+attacker-unforgeable binding material, so arbitrary/offline CARs remain
+non-authoritative. The production-dark reader can create an opaque stable-read
+capability only while directly fetching latest/CAR/latest from the exact
+OAuth/DPoP-authenticated PDS and verifying all three states agree. It is not
+registered in the service and returns no authority certificate or activation
+capability.
 
 The remaining credential gap is an unattended, exact-target OAuth broker and
 reauthorization lifecycle; the adapter may not persist the lab browser

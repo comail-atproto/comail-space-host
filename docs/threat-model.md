@@ -31,6 +31,11 @@ logs, and unauthenticated clients must not.
   possession of a CID alone is insufficient.
 - Immutable record hashes are checked before projection.
 - Mutable writes use CID compare-and-swap or an append-only alternative.
+- The official Spaces alpha commit signature does not sign the repository
+  hash with attacker-unforgeable binding material. Saved or caller-supplied
+  CARs are untrusted and cannot mint mailbox authority. Alpha recovery must be
+  one stable latest/CAR/latest read from the exact authenticated PDS, with
+  strict CAR consistency checks and target-bound opaque output.
 - Projectors use cross-process fencing and poison-record quarantine.
 - Queue and vault encryption keys live outside their databases and rotate.
 - Logs and evidence reject tokens and message-derived text; hashes and counts
