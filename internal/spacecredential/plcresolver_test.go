@@ -112,6 +112,30 @@ func TestPLCResolverRejectsMismatchOversizeRedirectAndKeyDowngrade(t *testing.T)
 	}
 }
 
+func TestPLCResolverUsesGeneralAtprotoKeyForRepoCommit(t *testing.T) {
+	general, _ := atcrypto.GeneratePrivateKeyP256()
+	dedicated, _ := atcrypto.GeneratePrivateKeyP256()
+	generalPublic, _ := general.PublicKey()
+	dedicatedPublic, _ := dedicated.PublicKey()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(testDIDDocument(
+			testSpaceDID, generalPublic.Multibase(), "https://spaces.example", dedicatedPublic.Multibase(),
+		))
+	}))
+	defer server.Close()
+	resolver, err := NewPLCSigningKeyResolver(server.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, key, err := resolver.ResolveRepoSource(context.Background(), syntax.DID(testSpaceDID), false)
+	if err != nil || host != "https://spaces.example" || !key.Equal(generalPublic) {
+		t.Fatalf("repo host=%q key=%v error=%v", host, key, err)
+	}
+	if _, err := resolver.ResolveCredentialKey(context.Background(), syntax.DID(testSpaceDID), "#atproto", false); err == nil {
+		t.Fatal("credential downgrade guard must remain distinct from repo signing-key lookup")
+	}
+}
+
 func testDIDDocument(did, atprotoKey, pds, spaceKey string) map[string]any {
 	methods := []map[string]string{{
 		"id": did + "#atproto", "type": "Multikey", "controller": did,

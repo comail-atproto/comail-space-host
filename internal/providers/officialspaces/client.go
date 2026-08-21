@@ -22,6 +22,7 @@ import (
 	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 	"github.com/comail-atproto/comail-space-host/internal/oauthclient"
 	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/spacecredential"
 	cidlib "github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multihash"
 )
@@ -50,7 +51,7 @@ const (
 	maxInventoryBytes  = 64 * 1024 * 1024
 	maxInventoryPages  = 1000
 	maxCommitBytes     = 64 * 1024
-	maxRepoStreamBytes = 64 << 30
+	maxRepoStreamBytes = 512 << 20
 )
 
 var allowedCollections = map[string]struct{}{
@@ -116,13 +117,15 @@ type Config struct {
 	SpaceKey          string
 	Epoch             string
 	AllowHTTP         bool
+	RepoSigningKeys   *spacecredential.PLCSigningKeyResolver
 }
 
 type Client struct {
-	origin string
-	target Target
-	writer WriterSource
-	reader CredentialSource
+	origin   string
+	target   Target
+	writer   WriterSource
+	reader   CredentialSource
+	repoKeys repoSigningKeyResolver
 }
 
 // Create is one append-only permissioned-repo record creation. Value must be
@@ -200,7 +203,7 @@ func New(config Config, writer WriterSource, reader CredentialSource) (*Client, 
 	if err := target.repositoryTarget().ValidateFor(repoDID.String()); err != nil {
 		return nil, repository.ErrTarget
 	}
-	return &Client{origin: origin, target: target, writer: writer, reader: reader}, nil
+	return &Client{origin: origin, target: target, writer: writer, reader: reader, repoKeys: config.RepoSigningKeys}, nil
 }
 
 // TransportID identifies wire compatibility only. It is not a provider
@@ -557,7 +560,8 @@ func (c *Client) GetBlob(ctx context.Context, cid string) ([]byte, error) {
 }
 
 // GetLatestCommit returns the bounded signed-commit object without claiming it
-// is verified. Only the future commit/CAR verifier may turn it into authority.
+// is verified. The alpha signature does not sign the repo hash; only the live
+// stable-read method may create a source-authenticated snapshot capability.
 func (c *Client) GetLatestCommit(ctx context.Context) (json.RawMessage, error) {
 	var commit json.RawMessage
 	err := c.withReader(ctx, func(credential ScopedDoer) error {
@@ -584,8 +588,9 @@ func (c *Client) GetLatestCommit(ctx context.Context) (json.RawMessage, error) {
 	return commit, err
 }
 
-// StreamRepo scopes one fresh read credential to a CAR consumer. This method
-// does not validate the CAR and deliberately returns no verified capability.
+// StreamRepo scopes one fresh read credential to a CAR consumer. This raw
+// escape hatch does not validate the CAR and deliberately returns no verified
+// or source-authenticated capability.
 func (c *Client) StreamRepo(ctx context.Context, excludeValues bool, consume func(io.Reader) error) error {
 	if consume == nil {
 		return mailbox.ErrInvalidRecord

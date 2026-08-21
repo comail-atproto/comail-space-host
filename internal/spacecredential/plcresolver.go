@@ -58,6 +58,27 @@ func (r *PLCSigningKeyResolver) ResolveCredentialKey(ctx context.Context, did sy
 	return key, nil
 }
 
+// ResolveRepoSource returns the PDS endpoint and #atproto key from one identity
+// snapshot. Authority-sensitive callers must not resolve these separately: a
+// concurrent forced refresh could otherwise pair a key with the wrong host.
+// The key is always the repo's general #atproto key; credential verification
+// separately prefers #atproto_space and rejects unsafe downgrade.
+func (r *PLCSigningKeyResolver) ResolveRepoSource(ctx context.Context, did syntax.DID, forceRefresh bool) (string, atcrypto.PublicKey, error) {
+	ident, err := r.resolveIdentity(ctx, did, forceRefresh)
+	if err != nil {
+		return "", nil, err
+	}
+	endpoint := ident.PDSEndpoint()
+	if endpoint == "" {
+		return "", nil, errors.New("spacecredential: repo DID declares no PDS endpoint")
+	}
+	key, err := ident.GetPublicKey("atproto")
+	if err != nil {
+		return "", nil, errors.New("spacecredential: repo signing key is not declared")
+	}
+	return endpoint, key, nil
+}
+
 func (r *PLCSigningKeyResolver) ResolveSpaceHost(ctx context.Context, did syntax.DID, forceRefresh bool) (string, error) {
 	ident, err := r.resolveIdentity(ctx, did, forceRefresh)
 	if err != nil {

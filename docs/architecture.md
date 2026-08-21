@@ -33,9 +33,12 @@ requirements.
 
 Official Spaces v3 does not implement this mutable contract. It is a separate,
 append-only protocol with member-authored creates, immutable message records,
-message/folder revision streams, operation claims, and a signed commit/CAR as
-the complete recovery authority. Its client deliberately does not implement
-the legacy repository interface or advertise a v2 authority certificate.
+message/folder revision streams, and operation claims. In the pinned alpha,
+the signed commit authenticates its context but does not sign the repository
+hash with attacker-unforgeable binding material. The authenticated PDS is
+therefore the recovery authority; a saved CAR is not standalone author proof.
+The client deliberately does not implement the legacy repository interface or
+advertise a v2 authority certificate.
 
 The unmodified pinned rsky epoch does not satisfy operation 3 for records which
 reference blobs. The lab's exact pinned patch verifies/promotes referenced
@@ -78,9 +81,19 @@ SHA-256 CID.
 The reader lane acquires a fresh delegated DPoP space credential for each
 read/recovery operation and destroys it afterward. Record and blob listings
 are bounded diagnostic surfaces only: pagination is not commit-pinned and can
-never construct authority. The CAR stream similarly returns no verified
-capability. A future signed-commit/CAR verifier is the sole component allowed
-to construct the opaque v3 snapshots consumed by the reducers.
+never construct authority. Raw CAR streaming similarly returns no verified
+capability.
+
+The source-authenticated recovery reader uses one scoped credential to fetch
+the latest commit, the full CAR, and the latest commit again. It requires the
+freshly resolved member-repo PDS endpoint to equal the configured origin, the
+same revision and LtHash digest across all three responses, exact ordered CAR
+roots and blocks, canonical DAG-CBOR, matching CIDs and record types, full
+stream exhaustion, exact target context, valid signature/MAC, and fixed byte
+and item limits. Its opaque result is bound to origin, space, member repo,
+epoch, revision, and both CAR roots. This is a stable read from the trusted
+PDS, not proof that an arbitrary holder's CAR was authored by the member; an
+uploaded, cached, or offline CAR can never construct the capability.
 
 This transport is not registered in `cmd/comail-space-host`, has no public HTTP
 route, certificate, relay binding, worker, or activation path, and cannot make
