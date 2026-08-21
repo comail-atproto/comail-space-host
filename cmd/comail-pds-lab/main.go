@@ -24,12 +24,15 @@ import (
 	"github.com/comail-atproto/comail-space-host/internal/oauthclient"
 	"github.com/comail-atproto/comail-space-host/internal/projection"
 	"github.com/comail-atproto/comail-space-host/internal/providers/happyview"
+	"github.com/comail-atproto/comail-space-host/internal/spacecredential"
+	"github.com/comail-atproto/comail-space-host/internal/spaceproof"
 	"github.com/comail-atproto/comail-space-host/internal/sqliteimport"
 	"github.com/comail-atproto/comail-space-host/internal/synthetic"
 	"github.com/comail-atproto/comail-space-host/internal/vandelayimport"
 )
 
 const syntheticDID = "did:plc:comailpdslabsynthetic"
+const officialPLCOrigin = "https://plc.directory"
 
 const happyViewCertifiedEpoch = happyview.CertifiedEpoch
 
@@ -96,6 +99,8 @@ func run(ctx context.Context, args []string) error {
 		return runOAuthLogin(ctx, args[1:])
 	case "oauth-provision":
 		return runOAuthProvision(ctx, args[1:])
+	case "oauth-credential-proof":
+		return runOAuthCredentialProof(ctx, args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage())
 		return nil
@@ -868,6 +873,89 @@ func runOAuthProvision(ctx context.Context, args []string) error {
 	}
 }
 
+func runOAuthCredentialProof(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("oauth-credential-proof", flag.ContinueOnError)
+	vaultPath := flags.String("vault", "", "absolute encrypted vault path")
+	keyPath := flags.String("key", "", "absolute vault key path")
+	did := flags.String("did", "", "exact account DID")
+	handle := flags.String("handle", "", "exact account handle")
+	origin := flags.String("origin", "", "exact Spaces PDS HTTPS origin")
+	spaceKey := flags.String("space-key", "primary", "exact mailbox space key")
+	sessionID := flags.String("session-id", "", "encrypted steady OAuth session ID")
+	callbackURL := flags.String("callback-url", "http://127.0.0.1:49153/oauth/callback", "exact loopback OAuth callback used for the session")
+	timeout := flags.Duration("timeout", time.Minute, "maximum credential proof duration")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := validateCredentialProofInputs(*sessionID, *timeout); err != nil {
+		return err
+	}
+	vault, err := authvault.Open(*vaultPath, *keyPath)
+	if err != nil {
+		return err
+	}
+	manager, err := oauthclient.New(oauthclient.Config{
+		DID: *did, Handle: *handle, Origin: *origin, CallbackURL: *callbackURL, SpaceKey: *spaceKey,
+	}, vault)
+	if err != nil {
+		return err
+	}
+	proofCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+	session, err := manager.Resume(proofCtx, *sessionID)
+	if err != nil {
+		return err
+	}
+	delegations, err := manager.Doer(session)
+	if err != nil {
+		return err
+	}
+	resolver, err := spacecredential.NewPLCSigningKeyResolver(officialPLCOrigin, false)
+	if err != nil {
+		return err
+	}
+	spaceURI := "at://" + *did + "/space/email.atmos.mailbox/" + *spaceKey
+	exchanger, err := spacecredential.New(spacecredential.Config{
+		SpaceURI: spaceURI, SpaceHostOrigin: *origin, SigningKeys: resolver,
+		AppAccess: spacecredential.AppAccessOpen,
+	})
+	if err != nil {
+		return err
+	}
+	credential, err := exchanger.Acquire(proofCtx, delegations)
+	if err != nil {
+		return err
+	}
+	defer credential.Close()
+	reader, err := spaceproof.New(spaceproof.Config{Origin: *origin, DID: *did, SpaceKey: *spaceKey}, credential)
+	if err != nil {
+		return err
+	}
+	readProof, err := reader.ProveRead(proofCtx)
+	if err != nil {
+		return err
+	}
+	return printJSON(map[string]any{
+		"version": 1, "profile": "official-alpha-sole-host-open-app", "readOnly": true,
+		"activationAttempted": false, "did": *did, "origin": *origin, "spaceUri": spaceURI,
+		"steadyGrantValidated": true, "delegationExchanged": true,
+		"credentialSignatureAndBindingVerified": true, "dpopReadVerified": true,
+		"repoState": readProof.RepoState, "recordMetadataPresent": readProof.RecordMetadataPresent,
+		"expiresAt":    credential.ExpiresAt().Format(time.RFC3339),
+		"needsRenewal": credential.NeedsRenewal(time.Now()),
+	})
+}
+
+func validateCredentialProofInputs(sessionID string, timeout time.Duration) error {
+	if sessionID == "" || len(sessionID) > 1024 || strings.ContainsAny(sessionID, " \t\r\n\x00") {
+		return errors.New("oauth-credential-proof requires one bounded opaque session ID")
+	}
+	if timeout <= 0 || timeout > 5*time.Minute {
+		return errors.New("oauth-credential-proof timeout must be positive and no more than five minutes")
+	}
+	return nil
+}
+
 func writeExclusiveJSON(path string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -896,7 +984,7 @@ func printJSON(value any) error {
 }
 
 func usageError() error {
-	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, certify-happyview-authority, capture-happyview-session, synthetic-proof, vault-init, oauth-login, oauth-provision, help")
+	return errors.New("expected one of: inspect, dry-run, inspect-vandelay, dry-run-vandelay, prove-vandelay, prove-happyview, certify-happyview-authority, capture-happyview-session, synthetic-proof, vault-init, oauth-login, oauth-provision, oauth-credential-proof, help")
 }
 
 func usage() string {
@@ -917,6 +1005,8 @@ Commands:
   vault-init       Create an encrypted OAuth session vault and key
   oauth-login      Obtain and encrypt an exact mailbox-space OAuth grant
   oauth-provision  Create/verify one exact space with a one-time OAuth grant
+  oauth-credential-proof
+                    Verify delegation and a fresh DPoP-bound space credential
 
 All source SQLite inputs must be explicit, closed, consistent snapshots. The
 rsky certificate applies only to the isolated pinned build plus lab patch.
