@@ -24,6 +24,7 @@ import (
 var (
 	ErrInvalidCallback         = errors.New("oauthclient: invalid OAuth callback")
 	ErrReauthorizationRequired = errors.New("oauthclient: interactive reauthorization required")
+	ErrCleanupRetained         = errors.New("oauthclient: encrypted OAuth session retained for retry")
 )
 
 const maxDPoPNonceBytes = 1024
@@ -42,6 +43,22 @@ type StartResult struct {
 	AuthorizationURL string
 	State            string
 }
+
+// ProvisioningOutcome carries the exact space result plus an opaque cleanup
+// handle only when the encrypted one-time session could not be fully revoked
+// and deleted. Callers must persist the handle privately and never log it.
+type ProvisioningOutcome struct {
+	Result            spaceprovision.Result
+	RetainedSessionID string
+}
+
+type retainedSessionError struct {
+	sessionID string
+	err       error
+}
+
+func (e *retainedSessionError) Error() string { return e.err.Error() }
+func (e *retainedSessionError) Unwrap() error { return e.err }
 
 type Manager struct {
 	app       *oauth.ClientApp
@@ -215,7 +232,7 @@ func (m *Manager) RevokeAndDelete(ctx context.Context, sessionID string) error {
 	if m == nil || m.profile != grantSteady {
 		return errors.New("oauthclient: steady OAuth manager is required")
 	}
-	session, err := m.loadValidatedSteadySession(ctx, sessionID)
+	session, err := m.loadValidatedSession(ctx, sessionID)
 	if err != nil {
 		return err
 	}
@@ -238,7 +255,7 @@ func (m *Manager) RevokeAndDelete(ctx context.Context, sessionID string) error {
 }
 
 func (m *Manager) resumeSession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
-	session, err := m.loadValidatedSteadySession(ctx, sessionID)
+	session, err := m.loadValidatedSession(ctx, sessionID)
 	if err == nil {
 		return session, nil
 	}
@@ -248,9 +265,10 @@ func (m *Manager) resumeSession(ctx context.Context, sessionID string) (*oauth.C
 	return nil, m.rejectSession(ctx, m.did, sessionID, session, err)
 }
 
-// loadValidatedSteadySession performs no cleanup. Explicit revocation uses it
-// so every target/grant/load failure retains the encrypted retry handle.
-func (m *Manager) loadValidatedSteadySession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
+// loadValidatedSession performs no cleanup. Explicit steady revocation and
+// provisioning cleanup retries use it so validation failures retain the
+// encrypted handle for bounded operator recovery.
+func (m *Manager) loadValidatedSession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
 	if sessionID == "" {
 		return nil, errors.New("oauthclient: session ID is required")
 	}
@@ -278,7 +296,11 @@ func (m *Manager) rejectSession(_ context.Context, storageDID syntax.DID, sessio
 	if resumeErr != nil {
 		resumeErr = fmt.Errorf("oauthclient: resume rejected OAuth session for cleanup: %w", resumeErr)
 	}
-	return errors.Join(rejection, resumeErr, cleanupErr)
+	combined := errors.Join(rejection, resumeErr, cleanupErr)
+	if storageDID == m.did && validCleanupSessionID(sessionID) && errors.Is(cleanupErr, ErrCleanupRetained) {
+		return &retainedSessionError{sessionID: sessionID, err: combined}
+	}
+	return combined
 }
 
 func (m *Manager) Doer(session *oauth.ClientSession) (*SessionDoer, error) {
@@ -415,30 +437,30 @@ func (d *SessionDoer) validateGrant(scopes []string) error {
 }
 
 func (m *Manager) cleanupSession(_ context.Context, did syntax.DID, sessionID string, session *oauth.ClientSession) error {
-	var revokeErr error
 	if session == nil {
-		revokeErr = errors.New("oauthclient: could not load OAuth session for remote revocation")
-	} else if session.Data == nil || session.Data.AuthServerRevocationEndpoint == "" {
-		revokeErr = errors.New("oauthclient: OAuth server supplied no revocation endpoint")
-	} else {
-		revokeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := session.RevokeSession(revokeCtx); err != nil {
-			revokeErr = fmt.Errorf("oauthclient: revoke OAuth session: %w", err)
-		}
-		cancel()
+		return fmt.Errorf("%w: remote OAuth revocation unconfirmed because the session could not be loaded", ErrCleanupRetained)
 	}
-	deleteCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if session.Data == nil || session.Data.AuthServerRevocationEndpoint == "" {
+		return fmt.Errorf("%w: remote OAuth revocation unavailable", ErrCleanupRetained)
+	}
+	revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	revokeErr := session.RevokeSession(revokeCtx)
+	revokeCancel()
+	if revokeErr != nil {
+		return fmt.Errorf("%w: remote OAuth revocation unconfirmed: %v", ErrCleanupRetained, revokeErr)
+	}
+	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	deleteErr := m.app.Store.DeleteSession(deleteCtx, did, sessionID)
-	cancel()
+	deleteCancel()
 	if deleteErr != nil {
-		deleteErr = fmt.Errorf("oauthclient: delete local OAuth session: %w", deleteErr)
+		return fmt.Errorf("%w: remote OAuth revocation confirmed but local deletion failed: %v", ErrCleanupRetained, deleteErr)
 	}
-	return errors.Join(revokeErr, deleteErr)
+	return nil
 }
 
 // Provisioner owns one isolated exact-skey create grant. The session never
-// escapes: Finish creates/verifies the predetermined mailbox and always
-// attempts remote revocation plus encrypted local deletion before returning.
+// escapes: Finish creates/verifies the predetermined mailbox, confirms remote
+// revocation, and only then deletes the encrypted local retry handle.
 type Provisioner struct {
 	manager *Manager
 }
@@ -473,19 +495,33 @@ func (p *Provisioner) ClientMetadata() oauth.ClientMetadata {
 }
 
 func (p *Provisioner) Finish(ctx context.Context, values url.Values) (spaceprovision.Result, error) {
+	outcome, err := p.FinishDetailed(ctx, values)
+	return outcome.Result, err
+}
+
+func (p *Provisioner) FinishDetailed(ctx context.Context, values url.Values) (ProvisioningOutcome, error) {
 	if p == nil || p.manager == nil {
-		return spaceprovision.Result{}, errors.New("oauthclient: provisioning manager is required")
+		return ProvisioningOutcome{}, errors.New("oauthclient: provisioning manager is required")
 	}
 	session, err := p.manager.finishSession(ctx, values)
 	if err != nil {
-		return spaceprovision.Result{}, err
+		var retained *retainedSessionError
+		if errors.As(err, &retained) {
+			return ProvisioningOutcome{RetainedSessionID: retained.sessionID}, err
+		}
+		return ProvisioningOutcome{}, err
 	}
-	return p.complete(ctx, session)
+	return p.completeDetailed(ctx, session)
 }
 
 func (p *Provisioner) complete(ctx context.Context, session *oauth.ClientSession) (spaceprovision.Result, error) {
+	outcome, err := p.completeDetailed(ctx, session)
+	return outcome.Result, err
+}
+
+func (p *Provisioner) completeDetailed(ctx context.Context, session *oauth.ClientSession) (ProvisioningOutcome, error) {
 	if session == nil || session.Data == nil {
-		return spaceprovision.Result{}, repository.ErrTarget
+		return ProvisioningOutcome{}, repository.ErrTarget
 	}
 	doer, doerErr := p.manager.sessionDoer(session)
 	var result spaceprovision.Result
@@ -504,7 +540,31 @@ func (p *Provisioner) complete(ctx context.Context, session *oauth.ClientSession
 		provisionErr = doerErr
 	}
 	cleanupErr := p.manager.cleanupSession(ctx, p.manager.did, session.Data.SessionID, session)
-	return result, errors.Join(provisionErr, cleanupErr)
+	outcome := ProvisioningOutcome{Result: result}
+	if errors.Is(cleanupErr, ErrCleanupRetained) {
+		outcome.RetainedSessionID = session.Data.SessionID
+	}
+	return outcome, errors.Join(provisionErr, cleanupErr)
+}
+
+// RetryCleanup resumes one exact retained create-only provisioning session,
+// revalidates its account/provider/grant binding, and retries revoke-then-delete.
+func (p *Provisioner) RetryCleanup(ctx context.Context, sessionID string) error {
+	if p == nil || p.manager == nil || p.manager.profile != grantProvisioning {
+		return errors.New("oauthclient: provisioning manager is required")
+	}
+	if !validCleanupSessionID(sessionID) {
+		return errors.New("oauthclient: invalid retained provisioning session ID")
+	}
+	session, err := p.manager.loadValidatedSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	return p.manager.cleanupSession(ctx, p.manager.did, sessionID, session)
+}
+
+func validCleanupSessionID(sessionID string) bool {
+	return sessionID != "" && len(sessionID) <= 1024 && !strings.ContainsAny(sessionID, "\r\n\x00")
 }
 
 // NewPinnedHTTPClient returns a no-proxy, no-redirect client bound to the

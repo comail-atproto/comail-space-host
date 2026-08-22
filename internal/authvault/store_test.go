@@ -255,4 +255,15 @@ func TestEncryptedStoreCompareAndSwapRecord(t *testing.T) {
 	if err != nil || string(got) != "two" {
 		t.Fatalf("record=%q err=%v", got, err)
 	}
+	deleted, err := store.CompareAndDeleteRecord(context.Background(), "ready:account", []byte("stale"))
+	if err != nil || deleted {
+		t.Fatalf("stale delete=%v err=%v", deleted, err)
+	}
+	deleted, err = store.CompareAndDeleteRecord(context.Background(), "ready:account", []byte("two"))
+	if err != nil || !deleted {
+		t.Fatalf("matching delete=%v err=%v", deleted, err)
+	}
+	if _, err := store.GetRecord(context.Background(), "ready:account"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CAS-deleted record error=%v", err)
+	}
 }

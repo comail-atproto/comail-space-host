@@ -30,14 +30,21 @@ import (
 const (
 	statusReady                 = "ready"
 	statusAuthorizationRequired = "authorization_required"
+	statusRevoked               = "revoked"
 	flowTTL                     = 15 * time.Minute
 	maxStartBodyBytes           = 4096
+	maxRevokeBodyBytes          = 4096
 	fixedReturnURL              = "https://comail.at/webmail/login"
 	maxRetiredSessions          = 16
 	discardedCleanupTimeout     = 5 * time.Second
+	revokeTimeout               = 30 * time.Second
+	maxRevokeCASAttempts        = 8
 )
 
-var ErrSteadyReauthorizationRequired = errors.New("onboardingbroker: steady grant requires reauthorization")
+var (
+	ErrSteadyReauthorizationRequired = errors.New("onboardingbroker: steady grant requires reauthorization")
+	errRevocationIncomplete          = errors.New("onboardingbroker: authorization revocation incomplete")
+)
 
 type Account struct {
 	DID       string
@@ -61,11 +68,13 @@ type RecordStore interface {
 	ConsumeRecord(context.Context, string) ([]byte, error)
 	DeleteRecord(context.Context, string) error
 	CompareAndSwapRecord(context.Context, string, []byte, []byte, time.Time) (bool, error)
+	CompareAndDeleteRecord(context.Context, string, []byte) (bool, error)
 }
 
 type OAuthDriver interface {
 	StartProvisioning(context.Context, Account) (oauthclient.StartResult, error)
-	FinishProvisioning(context.Context, Account, url.Values) error
+	FinishProvisioning(context.Context, Account, url.Values) (string, error)
+	RetireProvisioning(context.Context, Account, string) error
 	StartSteady(context.Context, Account) (oauthclient.StartResult, error)
 	FinishSteady(context.Context, Account, url.Values) (string, error)
 	CheckSteady(context.Context, Account, string) error
@@ -93,6 +102,16 @@ type startResponse struct {
 	Version          int    `json:"version"`
 	Status           string `json:"status"`
 	AuthorizationURL string `json:"authorizationUrl,omitempty"`
+}
+
+type revokeRequest struct {
+	Version int    `json:"version"`
+	DID     string `json:"did"`
+}
+
+type revokeResponse struct {
+	Version int    `json:"version"`
+	Status  string `json:"status"`
 }
 
 type flowRecord struct {
@@ -158,6 +177,8 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	switch {
 	case request.Method == http.MethodPost && request.URL.Path == "/v1/onboarding/start":
 		h.handleStart(response, request)
+	case request.Method == http.MethodPost && request.URL.Path == "/v1/onboarding/revoke":
+		h.handleRevoke(response, request)
 	case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/onboarding/"):
 		h.handleBrowserEntry(response, request)
 	case request.Method == http.MethodGet && request.URL.Path == "/oauth/provision/callback":
@@ -169,6 +190,45 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	default:
 		http.NotFound(response, request)
 	}
+}
+
+func (h *Handler) handleRevoke(response http.ResponseWriter, request *http.Request) {
+	if !h.authorized(request.Header.Get("Authorization")) {
+		response.Header().Set("WWW-Authenticate", `Bearer realm="comail-onboarding"`)
+		writeProblem(response, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeProblem(response, http.StatusUnsupportedMediaType, "JSON required")
+		return
+	}
+	var input revokeRequest
+	if err := decodeStrictBounded(request.Body, maxRevokeBodyBytes, &input); err != nil || input.Version != 1 {
+		writeProblem(response, http.StatusBadRequest, "invalid request")
+		return
+	}
+	accountIndex := h.accountIndexByDID(input.DID)
+	if accountIndex < 0 {
+		writeProblem(response, http.StatusForbidden, "account is not enabled")
+		return
+	}
+	account := h.accounts[accountIndex]
+	ctx, cancel := context.WithTimeout(request.Context(), revokeTimeout)
+	defer cancel()
+	readyErr := h.revokeReadyState(ctx, account)
+	discardedErr := h.revokeDiscardedState(ctx, account)
+	provisioningErr := h.revokeProvisioningDiscardedState(ctx, account)
+	combined := errors.Join(readyErr, discardedErr, provisioningErr)
+	if combined != nil {
+		if errors.Is(combined, errRevocationIncomplete) {
+			writeProblem(response, http.StatusServiceUnavailable, "authorization revocation incomplete")
+		} else {
+			writeProblem(response, http.StatusInternalServerError, "authorization state is unavailable")
+		}
+		return
+	}
+	writeJSON(response, http.StatusOK, revokeResponse{Version: 1, Status: statusRevoked})
 }
 
 func (h *Handler) handleStart(response http.ResponseWriter, request *http.Request) {
@@ -194,7 +254,8 @@ func (h *Handler) handleStart(response http.ResponseWriter, request *http.Reques
 	}
 	account := h.accounts[accountIndex]
 	h.cleanupDiscarded(request.Context(), account)
-	readyName := recordName("ready", account.DID+"\x00"+account.Handle)
+	h.cleanupDiscardedProvisioning(request.Context(), account)
+	readyName := readyRecordName(account.DID)
 	if encoded, readyErr := h.store.GetRecord(request.Context(), readyName); readyErr == nil {
 		var ready readyRecord
 		if decodeRecord(encoded, &ready) != nil || !validReadyRecord(ready, account) {
@@ -271,7 +332,15 @@ func (h *Handler) handleProvisioningCallback(response http.ResponseWriter, reque
 	if !ok {
 		return
 	}
-	if err := h.driver.FinishProvisioning(request.Context(), account, values); err != nil {
+	sessionID, err := h.driver.FinishProvisioning(request.Context(), account, values)
+	if err != nil {
+		if sessionID != "" {
+			if !validSessionID(sessionID) || h.enqueueDiscardedProvisioning(request.Context(), account, sessionID) != nil {
+				writeProblem(response, http.StatusInternalServerError, "unable to retain rejected authorization")
+				return
+			}
+			h.cleanupDiscardedProvisioning(request.Context(), account)
+		}
 		writeProblem(response, http.StatusBadRequest, "provisioning authorization rejected")
 		return
 	}
@@ -308,7 +377,7 @@ func (h *Handler) handleSteadyCallback(response http.ResponseWriter, request *ht
 		writeProblem(response, http.StatusBadRequest, "steady authorization rejected")
 		return
 	}
-	readyName := recordName("ready", account.DID+"\x00"+account.Handle)
+	readyName := readyRecordName(account.DID)
 	if err := h.replaceReadySession(request.Context(), readyName, account, sessionID); err != nil {
 		writeProblem(response, http.StatusInternalServerError, "unable to persist authorization")
 		return
@@ -490,8 +559,129 @@ func (h *Handler) cleanupRetired(ctx context.Context, name string, encoded []byt
 	_, _ = h.store.CompareAndSwapRecord(ctx, name, encoded, replacement, time.Time{})
 }
 
+// revokeReadyState revokes the active and every retired steady session from
+// one exact snapshot. It deletes the durable record only after every remote
+// revocation in that snapshot is confirmed and a CAS proves the record was not
+// replaced while those network calls were in flight.
+func (h *Handler) revokeReadyState(ctx context.Context, account Account) error {
+	name := readyRecordName(account.DID)
+	for attempt := 0; attempt < maxRevokeCASAttempts; attempt++ {
+		encoded, err := h.store.GetRecord(ctx, name)
+		if errors.Is(err, authvault.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var ready readyRecord
+		if decodeRecord(encoded, &ready) != nil || !validReadyRecord(ready, account) {
+			return errors.New("onboardingbroker: ready authorization state is invalid")
+		}
+		sessions := make([]string, 0, 1+len(ready.RetiredSessionIDs))
+		sessions = append(sessions, ready.SessionID)
+		sessions = append(sessions, ready.RetiredSessionIDs...)
+		if err := h.retireSessions(ctx, account, sessions); err != nil {
+			return errors.Join(errRevocationIncomplete, err)
+		}
+		deleted, err := h.store.CompareAndDeleteRecord(ctx, name, encoded)
+		if err != nil {
+			return err
+		}
+		if deleted {
+			return nil
+		}
+	}
+	return errRevocationIncomplete
+}
+
+// revokeDiscardedState applies the same remote-confirmation and CAS-delete
+// rule to steady sessions that failed their first live proof. The record may
+// be concurrently appended by another callback; a stale snapshot therefore
+// never deletes the replacement.
+func (h *Handler) revokeDiscardedState(ctx context.Context, account Account) error {
+	name := discardedRecordName(account.DID)
+	for attempt := 0; attempt < maxRevokeCASAttempts; attempt++ {
+		encoded, err := h.store.GetRecord(ctx, name)
+		if errors.Is(err, authvault.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var discarded discardedRecord
+		if decodeRecord(encoded, &discarded) != nil || !validDiscardedRecord(discarded, account) {
+			return errors.New("onboardingbroker: discarded authorization state is invalid")
+		}
+		if err := h.retireSessions(ctx, account, discarded.SessionIDs); err != nil {
+			return errors.Join(errRevocationIncomplete, err)
+		}
+		deleted, err := h.store.CompareAndDeleteRecord(ctx, name, encoded)
+		if err != nil {
+			return err
+		}
+		if deleted {
+			return nil
+		}
+	}
+	return errRevocationIncomplete
+}
+
+// revokeProvisioningDiscardedState drains the separate create-only grant queue.
+// Provisioning and steady session IDs never share a record or retirement path.
+func (h *Handler) revokeProvisioningDiscardedState(ctx context.Context, account Account) error {
+	name := provisioningDiscardedRecordName(account.DID)
+	for attempt := 0; attempt < maxRevokeCASAttempts; attempt++ {
+		encoded, err := h.store.GetRecord(ctx, name)
+		if errors.Is(err, authvault.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var discarded discardedRecord
+		if decodeRecord(encoded, &discarded) != nil || !validDiscardedRecord(discarded, account) {
+			return errors.New("onboardingbroker: discarded provisioning authorization state is invalid")
+		}
+		var combined error
+		for _, sessionID := range uniqueSessionIDs(discarded.SessionIDs, "") {
+			if err := ctx.Err(); err != nil {
+				combined = errors.Join(combined, err)
+				continue
+			}
+			if err := h.driver.RetireProvisioning(ctx, account, sessionID); err != nil {
+				combined = errors.Join(combined, err)
+			}
+		}
+		if combined != nil {
+			return errors.Join(errRevocationIncomplete, combined)
+		}
+		deleted, err := h.store.CompareAndDeleteRecord(ctx, name, encoded)
+		if err != nil {
+			return err
+		}
+		if deleted {
+			return nil
+		}
+	}
+	return errRevocationIncomplete
+}
+
+func (h *Handler) retireSessions(ctx context.Context, account Account, sessionIDs []string) error {
+	var combined error
+	for _, sessionID := range uniqueSessionIDs(sessionIDs, "") {
+		if err := ctx.Err(); err != nil {
+			combined = errors.Join(combined, err)
+			continue
+		}
+		if err := h.driver.RetireSteady(ctx, account, sessionID); err != nil {
+			combined = errors.Join(combined, err)
+		}
+	}
+	return combined
+}
+
 func (h *Handler) enqueueDiscarded(ctx context.Context, account Account, sessionID string) error {
-	name := recordName("discarded", account.DID+"\x00"+account.Handle)
+	name := discardedRecordName(account.DID)
 	for attempt := 0; attempt < 8; attempt++ {
 		var expected []byte
 		discarded := discardedRecord{Version: 1, AccountFingerprint: accountFingerprint(account)}
@@ -523,8 +713,41 @@ func (h *Handler) enqueueDiscarded(ctx context.Context, account Account, session
 	return errors.New("onboardingbroker: discarded session state changed concurrently")
 }
 
+func (h *Handler) enqueueDiscardedProvisioning(ctx context.Context, account Account, sessionID string) error {
+	name := provisioningDiscardedRecordName(account.DID)
+	for attempt := 0; attempt < 8; attempt++ {
+		var expected []byte
+		discarded := discardedRecord{Version: 1, AccountFingerprint: accountFingerprint(account)}
+		encoded, err := h.store.GetRecord(ctx, name)
+		if err == nil {
+			if decodeRecord(encoded, &discarded) != nil || !validDiscardedRecord(discarded, account) {
+				return errors.New("onboardingbroker: discarded provisioning session state is invalid")
+			}
+			expected = encoded
+		} else if !errors.Is(err, authvault.ErrNotFound) {
+			return err
+		}
+		discarded.SessionIDs = uniqueSessionIDs(append(discarded.SessionIDs, sessionID), "")
+		if len(discarded.SessionIDs) > maxRetiredSessions {
+			return errors.New("onboardingbroker: discarded provisioning OAuth session bound exceeded")
+		}
+		replacement, err := json.Marshal(discarded)
+		if err != nil {
+			return err
+		}
+		swapped, err := h.store.CompareAndSwapRecord(ctx, name, expected, replacement, time.Time{})
+		if err != nil {
+			return err
+		}
+		if swapped {
+			return nil
+		}
+	}
+	return errors.New("onboardingbroker: discarded provisioning session state changed concurrently")
+}
+
 func (h *Handler) cleanupDiscarded(ctx context.Context, account Account) {
-	name := recordName("discarded", account.DID+"\x00"+account.Handle)
+	name := discardedRecordName(account.DID)
 	encoded, err := h.store.GetRecord(ctx, name)
 	if err != nil {
 		return
@@ -538,6 +761,35 @@ func (h *Handler) cleanupDiscarded(ctx context.Context, account Account) {
 	remaining := make([]string, 0, len(discarded.SessionIDs))
 	for _, sessionID := range discarded.SessionIDs {
 		if err := h.driver.RetireSteady(cleanupCtx, account, sessionID); err != nil {
+			remaining = append(remaining, sessionID)
+		}
+	}
+	if len(remaining) == len(discarded.SessionIDs) {
+		return
+	}
+	discarded.SessionIDs = remaining
+	replacement, err := json.Marshal(discarded)
+	if err != nil {
+		return
+	}
+	_, _ = h.store.CompareAndSwapRecord(ctx, name, encoded, replacement, time.Time{})
+}
+
+func (h *Handler) cleanupDiscardedProvisioning(ctx context.Context, account Account) {
+	name := provisioningDiscardedRecordName(account.DID)
+	encoded, err := h.store.GetRecord(ctx, name)
+	if err != nil {
+		return
+	}
+	var discarded discardedRecord
+	if decodeRecord(encoded, &discarded) != nil || !validDiscardedRecord(discarded, account) || len(discarded.SessionIDs) == 0 {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, discardedCleanupTimeout)
+	defer cancel()
+	remaining := make([]string, 0, len(discarded.SessionIDs))
+	for _, sessionID := range discarded.SessionIDs {
+		if err := h.driver.RetireProvisioning(cleanupCtx, account, sessionID); err != nil {
 			remaining = append(remaining, sessionID)
 		}
 	}
@@ -574,6 +826,15 @@ func accountFingerprint(account Account) string {
 func (h *Handler) accountIndex(did, handle string) int {
 	for index, account := range h.accounts {
 		if account.DID == did && (handle == "" || account.Handle == handle) {
+			return index
+		}
+	}
+	return -1
+}
+
+func (h *Handler) accountIndexByDID(did string) int {
+	for index, account := range h.accounts {
+		if account.DID == did {
 			return index
 		}
 	}
@@ -628,10 +889,21 @@ func validCallbackValues(values url.Values) bool {
 			return false
 		}
 	}
-	if values.Get("error") != "" {
-		return values.Get("iss") == "" && values.Get("code") == ""
+	errorValue, hasError := values["error"]
+	_, hasCode := values["code"]
+	issuerValue, hasIssuer := values["iss"]
+	_, hasErrorDescription := values["error_description"]
+	_, hasErrorURI := values["error_uri"]
+	if hasError {
+		if errorValue[0] == "" || hasCode || (hasIssuer && issuerValue[0] == "") {
+			return false
+		}
+		return true
 	}
-	return values.Get("iss") != "" && values.Get("code") != ""
+	if hasErrorDescription || hasErrorURI {
+		return false
+	}
+	return hasIssuer && issuerValue[0] != "" && hasCode && values.Get("code") != ""
 }
 
 func randomToken() (string, error) {
@@ -653,6 +925,12 @@ func validToken(token string) bool {
 func recordName(kind, secret string) string {
 	digest := sha256.Sum256([]byte(kind + "\x00" + secret))
 	return kind + ":" + hex.EncodeToString(digest[:])
+}
+
+func readyRecordName(did string) string     { return recordName("ready", did) }
+func discardedRecordName(did string) string { return recordName("discarded", did) }
+func provisioningDiscardedRecordName(did string) string {
+	return recordName("discarded-provisioning", did)
 }
 
 func decodeStrictBounded(reader io.Reader, max int64, output any) error {

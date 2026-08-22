@@ -269,6 +269,32 @@ func (s *Store) CompareAndSwapRecord(
 	return swapped, err
 }
 
+// CompareAndDeleteRecord atomically deletes one live encrypted application
+// record only when its current plaintext value exactly matches expected. It is
+// the destructive counterpart to CompareAndSwapRecord: callers that perform a
+// remote cleanup first can prove they are deleting the exact state they acted
+// on rather than a concurrently replaced value.
+func (s *Store) CompareAndDeleteRecord(ctx context.Context, name string, expected []byte) (bool, error) {
+	if err := validateRecordName(name); err != nil {
+		return false, err
+	}
+	if len(expected) == 0 || len(expected) > maxRecordBytes {
+		return false, errors.New("authvault: record comparison exceeds safety bound")
+	}
+	deleted := false
+	err := s.mutate(ctx, func(state *diskState) error {
+		s.pruneExpired(state)
+		current, exists := state.Records[name]
+		if !exists || !equalBytes(current.Value, expected) {
+			return nil
+		}
+		delete(state.Records, name)
+		deleted = true
+		return nil
+	})
+	return deleted, err
+}
+
 func (s *Store) GetRecord(ctx context.Context, name string) ([]byte, error) {
 	if err := validateRecordName(name); err != nil {
 		return nil, err

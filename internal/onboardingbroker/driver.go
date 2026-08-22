@@ -10,12 +10,12 @@ import (
 	"github.com/comail-atproto/comail-space-host/internal/authvault"
 	"github.com/comail-atproto/comail-space-host/internal/oauthclient"
 	"github.com/comail-atproto/comail-space-host/internal/repository"
-	"github.com/comail-atproto/comail-space-host/internal/spaceprovision"
 )
 
 type ProvisioningOAuth interface {
 	StartDetailed(context.Context) (oauthclient.StartResult, error)
-	Finish(context.Context, url.Values) (spaceprovision.Result, error)
+	FinishDetailed(context.Context, url.Values) (oauthclient.ProvisioningOutcome, error)
+	RetryCleanup(context.Context, string) error
 	ClientMetadata() oauth.ClientMetadata
 }
 
@@ -91,20 +91,32 @@ func (d *ExactOAuthDriver) StartProvisioning(ctx context.Context, account Accoun
 	return runtime.Provisioning.StartDetailed(ctx)
 }
 
-func (d *ExactOAuthDriver) FinishProvisioning(ctx context.Context, account Account, values url.Values) error {
+func (d *ExactOAuthDriver) FinishProvisioning(ctx context.Context, account Account, values url.Values) (string, error) {
+	runtime, err := d.runtime(account)
+	if err != nil {
+		return "", err
+	}
+	outcome, err := runtime.Provisioning.FinishDetailed(ctx, values)
+	if err != nil {
+		return outcome.RetainedSessionID, err
+	}
+	want := "at://" + account.DID + "/space/email.atmos.mailbox/" + account.SpaceKey
+	if outcome.Result.SpaceURI != want {
+		return "", errors.New("onboardingbroker: provisioned space target mismatch")
+	}
+	return "", nil
+}
+
+func (d *ExactOAuthDriver) RetireProvisioning(ctx context.Context, account Account, sessionID string) error {
 	runtime, err := d.runtime(account)
 	if err != nil {
 		return err
 	}
-	result, err := runtime.Provisioning.Finish(ctx, values)
-	if err != nil {
-		return err
+	err = runtime.Provisioning.RetryCleanup(ctx, sessionID)
+	if errors.Is(err, authvault.ErrNotFound) {
+		return nil
 	}
-	want := "at://" + account.DID + "/space/email.atmos.mailbox/" + account.SpaceKey
-	if result.SpaceURI != want {
-		return errors.New("onboardingbroker: provisioned space target mismatch")
-	}
-	return nil
+	return err
 }
 
 func (d *ExactOAuthDriver) StartSteady(ctx context.Context, account Account) (oauthclient.StartResult, error) {

@@ -573,6 +573,128 @@ func TestProvisionerRevokesAndDeletesOneTimeSessionAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestProvisionerRetainsOneTimeSessionWhenRemoteRevocationFails(t *testing.T) {
+	revocations := 0
+	revocationAvailable := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/oauth/revoke":
+			revocations++
+			if revocationAvailable || revocations == 1 {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/xrpc/com.atproto.simplespace.createSpace":
+			_, _ = io.WriteString(w, `{"uri":"at://`+testMemberDID+`/space/email.atmos.mailbox/primary"}`)
+		case "/xrpc/com.atproto.simplespace.getSpace":
+			_, _ = io.WriteString(w, `{"uri":"at://`+testMemberDID+`/space/email.atmos.mailbox/primary","policy":{"$type":"com.atproto.simplespace.defs#memberListPolicy"},"appAccess":{"$type":"com.atproto.simplespace.defs#open"}}`)
+		case "/xrpc/com.atproto.simplespace.listMembers":
+			_, _ = io.WriteString(w, `{"members":[]}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	privateKey, _ := atcrypto.GeneratePrivateKeyP256()
+	scopes, _ := ProvisioningScopes(testMemberDID, "primary")
+	data := oauth.ClientSessionData{
+		AccountDID: syntax.DID(testMemberDID), SessionID: "one-time-provisioning", HostURL: server.URL,
+		AuthServerURL: server.URL, AuthServerRevocationEndpoint: server.URL + "/oauth/revoke",
+		Scopes: scopes, AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh",
+		DPoPPrivateKeyMultibase: privateKey.Multibase(),
+	}
+	store := &testAuthStore{session: data}
+	config := oauth.NewLocalhostConfig("http://127.0.0.1:49153/oauth/callback", scopes)
+	app := oauth.NewClientApp(&config, store)
+	app.Client = server.Client()
+	client, origin, err := newPinnedHTTPClient(server.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		app: app, did: syntax.DID(testMemberDID), origin: origin, spaceKey: "primary",
+		client: client, profile: grantProvisioning, allowHTTP: true,
+	}
+	provisioner := &Provisioner{manager: manager}
+	session, err := manager.sessionFromCallbackData(&data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := provisioner.completeDetailed(context.Background(), session)
+	if !outcome.Result.Created {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+	if err == nil || !strings.Contains(err.Error(), "retained for retry") {
+		t.Fatalf("revocation error = %v", err)
+	}
+	if outcome.RetainedSessionID != data.SessionID {
+		t.Fatalf("retained session ID = %q, want callback session", outcome.RetainedSessionID)
+	}
+	if strings.Contains(err.Error(), data.SessionID) {
+		t.Fatal("cleanup error leaked the opaque retained session ID")
+	}
+	if revocations != 2 {
+		t.Fatalf("revocations = %d, want both remote attempts", revocations)
+	}
+	if store.deleted {
+		t.Fatal("one-time provisioning session was deleted before remote revocation was confirmed")
+	}
+
+	revocationAvailable = true
+	if err := provisioner.RetryCleanup(context.Background(), outcome.RetainedSessionID); err != nil {
+		t.Fatalf("retry retained provisioning cleanup: %v", err)
+	}
+	if !store.deleted {
+		t.Fatal("confirmed retry did not delete the encrypted provisioning session")
+	}
+}
+
+func TestProvisionerRetryCleanupRejectsNonProvisioningGrantWithoutRevocation(t *testing.T) {
+	revocations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		revocations++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	privateKey, err := atcrypto.GeneratePrivateKeyP256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	steadyScopes, err := MailboxScopes(testMemberDID, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioningScopes, err := ProvisioningScopes(testMemberDID, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := oauth.ClientSessionData{
+		AccountDID: syntax.DID(testMemberDID), SessionID: "wrong-profile-session", HostURL: server.URL,
+		AuthServerURL: server.URL, AuthServerRevocationEndpoint: server.URL + "/oauth/revoke",
+		Scopes: steadyScopes, AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh",
+		DPoPPrivateKeyMultibase: privateKey.Multibase(),
+	}
+	store := &testAuthStore{session: data}
+	config := oauth.NewLocalhostConfig("http://127.0.0.1:49153/oauth/callback", provisioningScopes)
+	app := oauth.NewClientApp(&config, store)
+	app.Client = server.Client()
+	client, origin, err := newPinnedHTTPClient(server.URL, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioner := &Provisioner{manager: &Manager{
+		app: app, did: syntax.DID(testMemberDID), origin: origin, spaceKey: "primary",
+		client: client, profile: grantProvisioning, allowHTTP: true,
+	}}
+	if err := provisioner.RetryCleanup(context.Background(), data.SessionID); !errors.Is(err, repository.ErrUnauthorized) {
+		t.Fatalf("wrong-profile cleanup error = %v", err)
+	}
+	if revocations != 0 || store.deleted {
+		t.Fatalf("wrong-profile cleanup had side effects: revocations=%d deleted=%v", revocations, store.deleted)
+	}
+}
+
 func TestProvisionerCleansUpOneTimeSessionAfterProvisioningFailure(t *testing.T) {
 	revocations := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
