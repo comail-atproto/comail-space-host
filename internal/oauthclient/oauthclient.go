@@ -33,8 +33,14 @@ type Config struct {
 	Handle      string
 	Origin      string
 	CallbackURL string
+	ClientID    string
 	SpaceKey    string
 	AllowHTTP   bool
+}
+
+type StartResult struct {
+	AuthorizationURL string
+	State            string
 }
 
 type Manager struct {
@@ -71,9 +77,9 @@ func newManager(cfg Config, store oauth.ClientAuthStore, profile grantProfile) (
 	if err != nil {
 		return nil, fmt.Errorf("oauthclient: parse exact handle: %w", err)
 	}
-	callback, err := url.Parse(cfg.CallbackURL)
-	if err != nil || callback.Scheme != "http" || callback.Hostname() != "127.0.0.1" || callback.Port() == "" || callback.Path != "/oauth/callback" || callback.User != nil || callback.RawQuery != "" || callback.Fragment != "" {
-		return nil, errors.New("oauthclient: callback must be exact http://127.0.0.1:PORT/oauth/callback")
+	publicClient, err := validateClientLocation(cfg.CallbackURL, cfg.ClientID)
+	if err != nil {
+		return nil, err
 	}
 	client, origin, err := NewPinnedHTTPClient(cfg.Origin, cfg.AllowHTTP)
 	if err != nil {
@@ -88,8 +94,13 @@ func newManager(cfg Config, store oauth.ClientAuthStore, profile grantProfile) (
 	if err != nil {
 		return nil, err
 	}
-	oauthConfig := oauth.NewLocalhostConfig(cfg.CallbackURL, scopes)
-	app := oauth.NewClientApp(&oauthConfig, store)
+	var oauthConfig oauth.ClientConfig
+	if publicClient {
+		oauthConfig = oauth.NewPublicConfig(cfg.ClientID, cfg.CallbackURL, scopes)
+	} else {
+		oauthConfig = oauth.NewLocalhostConfig(cfg.CallbackURL, scopes)
+	}
+	app := oauth.NewClientApp(&oauthConfig, trackingAuthStore{ClientAuthStore: store})
 	app.Client = client
 	app.Resolver.Client = client
 	directory := identity.NewMockDirectory()
@@ -107,15 +118,40 @@ func newManager(cfg Config, store oauth.ClientAuthStore, profile grantProfile) (
 }
 
 func (m *Manager) Start(ctx context.Context) (string, error) {
+	started, err := m.StartDetailed(ctx)
+	return started.AuthorizationURL, err
+}
+
+func (m *Manager) StartDetailed(ctx context.Context) (StartResult, error) {
+	if m == nil || m.app == nil {
+		return StartResult{}, errors.New("oauthclient: OAuth manager is required")
+	}
+	captured := make(chan string, 1)
+	ctx = context.WithValue(ctx, authStateCaptureKey{}, captured)
 	authorizeURL, err := m.app.StartAuthFlow(ctx, m.handle.String())
 	if err != nil {
-		return "", fmt.Errorf("oauthclient: start flow: %w", err)
+		return StartResult{}, fmt.Errorf("oauthclient: start flow: %w", err)
 	}
 	u, err := url.Parse(authorizeURL)
 	if err != nil || !sameOrigin(u, m.origin) || u.User != nil || u.Fragment != "" {
-		return "", fmt.Errorf("%w: authorization URL escaped pinned provider", repository.ErrTarget)
+		return StartResult{}, fmt.Errorf("%w: authorization URL escaped pinned provider", repository.ErrTarget)
 	}
-	return authorizeURL, nil
+	select {
+	case state := <-captured:
+		if state == "" {
+			return StartResult{}, errors.New("oauthclient: OAuth request supplied no state")
+		}
+		return StartResult{AuthorizationURL: authorizeURL, State: state}, nil
+	default:
+		return StartResult{}, errors.New("oauthclient: OAuth request state was not persisted")
+	}
+}
+
+func (m *Manager) ClientMetadata() oauth.ClientMetadata {
+	if m == nil || m.app == nil || m.app.Config == nil {
+		return oauth.ClientMetadata{}
+	}
+	return m.app.Config.ClientMetadata()
 }
 
 func (m *Manager) Finish(ctx context.Context, values url.Values) (*oauth.ClientSession, error) {
@@ -422,6 +458,20 @@ func (p *Provisioner) Start(ctx context.Context) (string, error) {
 	return p.manager.Start(ctx)
 }
 
+func (p *Provisioner) StartDetailed(ctx context.Context) (StartResult, error) {
+	if p == nil || p.manager == nil {
+		return StartResult{}, errors.New("oauthclient: provisioning manager is required")
+	}
+	return p.manager.StartDetailed(ctx)
+}
+
+func (p *Provisioner) ClientMetadata() oauth.ClientMetadata {
+	if p == nil || p.manager == nil {
+		return oauth.ClientMetadata{}
+	}
+	return p.manager.ClientMetadata()
+}
+
 func (p *Provisioner) Finish(ctx context.Context, values url.Values) (spaceprovision.Result, error) {
 	if p == nil || p.manager == nil {
 		return spaceprovision.Result{}, errors.New("oauthclient: provisioning manager is required")
@@ -559,6 +609,49 @@ func originDialPort(origin *url.URL) string {
 
 func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
 	return NewPinnedHTTPClient(rawOrigin, allowHTTP)
+}
+
+type authStateCaptureKey struct{}
+
+type trackingAuthStore struct {
+	oauth.ClientAuthStore
+}
+
+func (s trackingAuthStore) SaveAuthRequestInfo(ctx context.Context, info oauth.AuthRequestData) error {
+	if err := s.ClientAuthStore.SaveAuthRequestInfo(ctx, info); err != nil {
+		return err
+	}
+	if captured, ok := ctx.Value(authStateCaptureKey{}).(chan string); ok {
+		select {
+		case captured <- info.State:
+		default:
+		}
+	}
+	return nil
+}
+
+func validateClientLocation(rawCallback, rawClientID string) (bool, error) {
+	callback, err := url.Parse(rawCallback)
+	if err != nil || callback.Host == "" || callback.User != nil || callback.Opaque != "" || callback.RawQuery != "" || callback.Fragment != "" || callback.Path == "" || callback.Path == "/" || callback.RawPath != "" {
+		return false, errors.New("oauthclient: callback must be an exact loopback or HTTPS URL")
+	}
+	if callback.Scheme == "http" && callback.Hostname() == "127.0.0.1" && callback.Port() != "" && callback.Path == "/oauth/callback" {
+		if rawClientID != "" {
+			return false, errors.New("oauthclient: localhost client ID is derived and must be empty")
+		}
+		return false, nil
+	}
+	if callback.Scheme != "https" || callback.Port() != "" || net.ParseIP(callback.Hostname()) != nil || !strings.Contains(callback.Hostname(), ".") || strings.EqualFold(callback.Hostname(), "localhost") {
+		return false, errors.New("oauthclient: public callback must use a public HTTPS hostname without an explicit port")
+	}
+	clientID, err := url.Parse(rawClientID)
+	if err != nil || clientID.Scheme != "https" || clientID.Host == "" || clientID.User != nil || clientID.Opaque != "" || clientID.RawQuery != "" || clientID.Fragment != "" || clientID.Path == "" || clientID.Path == "/" || clientID.RawPath != "" {
+		return false, errors.New("oauthclient: public client metadata ID must be an exact HTTPS URL")
+	}
+	if !sameOrigin(callback, clientID.Scheme+"://"+clientID.Host) {
+		return false, errors.New("oauthclient: public callback and client metadata must share an origin")
+	}
+	return true, nil
 }
 
 func sameOriginString(raw, expected string) bool {

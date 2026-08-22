@@ -152,3 +152,107 @@ func TestEncryptedStoreExpiresAbandonedAuthRequests(t *testing.T) {
 		t.Fatalf("expired state was not pruned: %v", err)
 	}
 }
+
+func TestEncryptedStoreRecordsAreDurableEncryptedAndConsumableOnce(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	vaultPath := filepath.Join(dir, "vault")
+	keyPath := filepath.Join(dir, "key")
+	store, err := Create(vaultPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0).UTC()
+	store.now = func() time.Time { return now }
+	secret := []byte(`{"did":"did:plc:must-not-leak","session":"opaque-session"}`)
+	if err := store.CreateRecord(context.Background(), "flow:sha256-key", secret, now.Add(15*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRecord(context.Background(), "flow:sha256-key", secret, now.Add(15*time.Minute)); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("duplicate record error = %v", err)
+	}
+	onDisk, err := os.ReadFile(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(onDisk, secret) || bytes.Contains(onDisk, []byte("did:plc:must-not-leak")) {
+		t.Fatal("encrypted vault leaked broker record plaintext")
+	}
+	reopened, err := Open(vaultPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reopened.ConsumeRecord(context.Background(), "flow:sha256-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, secret) {
+		t.Fatalf("consumed record = %q", got)
+	}
+	if _, err := reopened.ConsumeRecord(context.Background(), "flow:sha256-key"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replayed record error = %v", err)
+	}
+}
+
+func TestEncryptedStoreRecordExpiryAndReplacement(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Create(filepath.Join(dir, "vault"), filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0).UTC()
+	store.now = func() time.Time { return now }
+	if err := store.SetRecord(context.Background(), "ready:account", []byte("one"), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRecord(context.Background(), "ready:account", []byte("two"), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetRecord(context.Background(), "ready:account")
+	if err != nil || string(got) != "two" {
+		t.Fatalf("replacement = %q, err = %v", got, err)
+	}
+	if err := store.CreateRecord(context.Background(), "expiring", []byte("gone"), now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute + time.Second)
+	if _, err := store.GetRecord(context.Background(), "expiring"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired record error = %v", err)
+	}
+}
+
+func TestEncryptedStoreCompareAndSwapRecord(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Create(filepath.Join(dir, "vault"), filepath.Join(dir, "key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped, err := store.CompareAndSwapRecord(context.Background(), "ready:account", nil, []byte("one"), time.Time{})
+	if err != nil || !swapped {
+		t.Fatalf("create swap=%v err=%v", swapped, err)
+	}
+	swapped, err = store.CompareAndSwapRecord(context.Background(), "ready:account", nil, []byte("lost"), time.Time{})
+	if err != nil || swapped {
+		t.Fatalf("stale absent swap=%v err=%v", swapped, err)
+	}
+	swapped, err = store.CompareAndSwapRecord(context.Background(), "ready:account", []byte("wrong"), []byte("lost"), time.Time{})
+	if err != nil || swapped {
+		t.Fatalf("stale value swap=%v err=%v", swapped, err)
+	}
+	swapped, err = store.CompareAndSwapRecord(context.Background(), "ready:account", []byte("one"), []byte("two"), time.Time{})
+	if err != nil || !swapped {
+		t.Fatalf("replacement swap=%v err=%v", swapped, err)
+	}
+	got, err := store.GetRecord(context.Background(), "ready:account")
+	if err != nil || string(got) != "two" {
+		t.Fatalf("record=%q err=%v", got, err)
+	}
+}

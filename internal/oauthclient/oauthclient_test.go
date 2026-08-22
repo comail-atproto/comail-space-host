@@ -752,3 +752,70 @@ func TestCanonicalizedLoopbackHTTPUsesPort80(t *testing.T) {
 		t.Fatalf("canonical HTTP dial port = %q", got)
 	}
 }
+
+func TestNewManagerSupportsStrictHTTPSPublicClient(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer provider.Close()
+	manager, err := New(Config{
+		DID:         testMemberDID,
+		Handle:      "scott.spaces-alpha.bsky.network",
+		Origin:      provider.URL,
+		CallbackURL: "https://spaces.comail.at/oauth/steady/callback",
+		ClientID:    "https://spaces.comail.at/oauth/steady/client-metadata.json",
+		SpaceKey:    "primary",
+		AllowHTTP:   true,
+	}, &testAuthStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.app.Config.ClientID != "https://spaces.comail.at/oauth/steady/client-metadata.json" {
+		t.Fatalf("client ID = %q", manager.app.Config.ClientID)
+	}
+	if manager.app.Config.CallbackURL != "https://spaces.comail.at/oauth/steady/callback" {
+		t.Fatalf("callback = %q", manager.app.Config.CallbackURL)
+	}
+	metadata := manager.ClientMetadata()
+	if metadata.ClientID != manager.app.Config.ClientID || len(metadata.RedirectURIs) != 1 || metadata.RedirectURIs[0] != manager.app.Config.CallbackURL {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestNewManagerRejectsUnsafePublicClientMetadata(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer provider.Close()
+	tests := []Config{
+		{CallbackURL: "https://spaces.comail.at/oauth/callback", ClientID: "http://spaces.comail.at/metadata"},
+		{CallbackURL: "https://spaces.comail.at/oauth/callback", ClientID: "https://other.example/metadata"},
+		{CallbackURL: "https://127.0.0.1/oauth/callback", ClientID: "https://127.0.0.1/metadata"},
+		{CallbackURL: "https://spaces.comail.at/oauth/callback?did=secret", ClientID: "https://spaces.comail.at/metadata"},
+		{CallbackURL: "https://spaces.comail.at/oauth/callback", ClientID: ""},
+	}
+	for index, configured := range tests {
+		configured.DID = testMemberDID
+		configured.Handle = "scott.spaces-alpha.bsky.network"
+		configured.Origin = provider.URL
+		configured.SpaceKey = "primary"
+		configured.AllowHTTP = true
+		if _, err := New(configured, &testAuthStore{}); err == nil {
+			t.Fatalf("case %d accepted unsafe public client", index)
+		}
+	}
+}
+
+func TestTrackingAuthStoreCapturesStatePerStartContext(t *testing.T) {
+	base := &testAuthStore{}
+	store := trackingAuthStore{ClientAuthStore: base}
+	capture := make(chan string, 1)
+	ctx := context.WithValue(context.Background(), authStateCaptureKey{}, capture)
+	if err := store.SaveAuthRequestInfo(ctx, oauth.AuthRequestData{State: "opaque-oauth-state"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-capture:
+		if got != "opaque-oauth-state" {
+			t.Fatalf("captured state = %q", got)
+		}
+	default:
+		t.Fatal("OAuth state was not captured")
+	}
+}
