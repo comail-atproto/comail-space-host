@@ -210,6 +210,10 @@ func New(config Config, writer WriterSource, reader CredentialSource) (*Client, 
 // registration or authority certificate.
 func (c *Client) TransportID() string { return "official-spaces-transport@" + PinnedEpoch }
 
+// Target returns the credential-free exact transport binding. It contains no
+// OAuth, delegation, or DPoP material and is safe to compare at adapter setup.
+func (c *Client) Target() Target { return c.target }
+
 func (c *Client) UploadMessageBlob(ctx context.Context, raw []byte) (mailbox.BlobRef, error) {
 	if len(raw) == 0 {
 		return mailbox.BlobRef{}, mailbox.ErrInvalidRecord

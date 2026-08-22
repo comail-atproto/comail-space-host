@@ -35,7 +35,7 @@ func TestNewPinsOfficialAlphaTargetAndAuthLanes(t *testing.T) {
 	if got := client.TransportID(); got != "official-spaces-transport@"+PinnedEpoch {
 		t.Fatalf("transport id = %q", got)
 	}
-	if got := client.target; got.Origin != "https://spaces.example" || got.SpaceURI != testSpaceURI || got.RepoDID != testDID || got.Epoch != PinnedEpoch {
+	if got := client.Target(); got.Origin != "https://spaces.example" || got.SpaceURI != testSpaceURI || got.RepoDID != testDID || got.Epoch != PinnedEpoch {
 		t.Fatalf("target = %#v", got)
 	}
 
