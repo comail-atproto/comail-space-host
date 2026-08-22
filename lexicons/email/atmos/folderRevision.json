@@ -1,0 +1,79 @@
+{
+  "lexicon": 1,
+  "id": "email.atmos.folderRevision",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "ALPHA. Immutable create-only causal revision for one 71-character stable folder identity. The revision and deterministic email.atmos.folderOperation claim are created atomically. Standard role identities, names, and roles are canonical and cannot be renamed, rebound, or deleted. Custom rename conflicts reduce by revision height then unsigned UTF-8 operation-ID order; tombstone is grow-only.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "folderId",
+          "operationId",
+          "parents",
+          "revision",
+          "createdAt"
+        ],
+        "properties": {
+          "folderId": {
+            "type": "string",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "operationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "parents": {
+            "type": "array",
+            "maxLength": 64,
+            "items": {
+              "type": "string",
+              "minLength": 77,
+              "maxLength": 77
+            }
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "role": {
+            "type": "string",
+            "description": "Assigned only on a standard-role root. Runtime validation closes knownValues and requires the deterministic folder ID and canonical display name for this role.",
+            "knownValues": [
+              "inbox",
+              "archive",
+              "drafts",
+              "sent",
+              "junk",
+              "trash",
+              "important"
+            ],
+            "maxLength": 64
+          },
+          "tombstone": {
+            "type": "boolean",
+            "description": "Grow-only irreversible deletion for custom folders. Canonical standard folders cannot be tombstoned; an observed tombstone forbids later live assignments."
+          },
+          "merge": {
+            "type": "boolean",
+            "description": "True only for a parent-only causal-head join with no field assignments."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Audit metadata only. Reducers never use client time for conflict ordering."
+          }
+        }
+      }
+    }
+  }
+}

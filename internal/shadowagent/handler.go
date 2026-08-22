@@ -120,17 +120,18 @@ type captureResponse struct {
 }
 
 type messageSnapshot struct {
-	URI         string   `json:"uri"`
-	RKey        string   `json:"rkey"`
-	Fingerprint string   `json:"fingerprint"`
-	SourceKey   string   `json:"sourceKey,omitempty"`
-	SHA256      string   `json:"sha256"`
-	Size        int64    `json:"size"`
-	Mailbox     string   `json:"mailbox"`
-	Keywords    []string `json:"keywords"`
-	Revision    uint64   `json:"revision"`
-	Tombstoned  bool     `json:"tombstoned"`
-	Raw         []byte   `json:"raw"`
+	URI              string   `json:"uri"`
+	RKey             string   `json:"rkey"`
+	Fingerprint      string   `json:"fingerprint"`
+	LogicalMessageID string   `json:"logicalMessageId"`
+	SourceKey        string   `json:"sourceKey,omitempty"`
+	SHA256           string   `json:"sha256"`
+	Size             int64    `json:"size"`
+	Mailbox          string   `json:"mailbox"`
+	Keywords         []string `json:"keywords"`
+	Revision         uint64   `json:"revision"`
+	Tombstoned       bool     `json:"tombstoned"`
+	Raw              []byte   `json:"raw"`
 }
 
 type inventoryRequest struct {
@@ -660,6 +661,8 @@ func (h *Handler) ensureFolder(ctx context.Context, name string) error {
 		role = "trash"
 	case "archive":
 		role = "archive"
+	case "important":
+		role = "important"
 	}
 	folder := mailbox.NewFolder(name, role, mailbox.StableUIDValidity(h.did, name))
 	_, err = h.repo.ApplyWrites(ctx, h.target, []repository.Write{{Action: repository.Create, Collection: mailbox.FolderCollection, RKey: folder.RKey, Value: folder.Record}})
@@ -759,9 +762,20 @@ func (h *Handler) inventoryMessages(ctx context.Context) ([]messageSnapshot, err
 		if json.Unmarshal(storedMessage.Value, &message) != nil {
 			return nil, mailbox.ErrIntegrity
 		}
+		if err := repository.ValidateRecordURI(h.target, storedMessage.URI, mailbox.MessageCollection, storedState.RKey); err != nil ||
+			message.DeliveryFingerprint != storedState.RKey {
+			return nil, mailbox.ErrIntegrity
+		}
+		logicalMessageID := message.LogicalMessageID
+		if logicalMessageID == "" {
+			logicalMessageID = mailbox.LogicalMessageID(h.did, message.SourceKey, storedState.RKey)
+		}
+		if logicalMessageID != mailbox.LogicalMessageID(h.did, message.SourceKey, storedState.RKey) {
+			return nil, mailbox.ErrIntegrity
+		}
 		item := messageSnapshot{
-			URI:  h.target.SpaceURI + "/" + mailbox.MessageCollection + "/" + storedState.RKey,
-			RKey: storedState.RKey, Fingerprint: storedState.RKey, SourceKey: message.SourceKey,
+			URI: storedMessage.URI, RKey: storedState.RKey, Fingerprint: storedState.RKey,
+			LogicalMessageID: logicalMessageID, SourceKey: message.SourceKey,
 			SHA256: message.SHA256, Size: message.Size,
 			Mailbox: folder, Keywords: append([]string(nil), state.Keywords...), Revision: state.Revision, Tombstoned: state.Tombstone,
 		}
@@ -779,7 +793,7 @@ func (h *Handler) inventoryMessages(ctx context.Context) ([]messageSnapshot, err
 
 func portableFolderName(folder mailbox.FolderRecord) (string, bool) {
 	switch folder.Role {
-	case "inbox", "junk", "sent", "drafts", "trash", "archive":
+	case "inbox", "junk", "sent", "drafts", "trash", "archive", "important":
 		return folder.Role, true
 	case "":
 		return folder.Name, validPortableMailbox(folder.Name)

@@ -6,8 +6,104 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/comail-atproto/comail-space-host/internal/oauthclient"
 )
+
+func TestUsageAdvertisesOneTimeOAuthProvisioning(t *testing.T) {
+	text := usage()
+	if !strings.Contains(text, "oauth-provision") || !strings.Contains(text, "one-time") ||
+		!strings.Contains(text, "oauth-credential-proof") || !strings.Contains(text, "oauth-revoke") {
+		t.Fatalf("usage omitted official OAuth/credential commands: %q", text)
+	}
+}
+
+func TestCredentialProofRequiresBoundedOpaqueSessionAndTimeout(t *testing.T) {
+	if err := validateCredentialProofInputs("opaque-session", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		session string
+		timeout time.Duration
+	}{
+		{timeout: time.Minute},
+		{session: "contains whitespace", timeout: time.Minute},
+		{session: strings.Repeat("x", 1025), timeout: time.Minute},
+		{session: "opaque", timeout: 0},
+		{session: "opaque", timeout: 5*time.Minute + time.Nanosecond},
+	} {
+		if err := validateCredentialProofInputs(test.session, test.timeout); err == nil {
+			t.Fatalf("accepted session length=%d timeout=%s", len(test.session), test.timeout)
+		}
+	}
+}
+
+func TestOAuthRevokeRequiresBoundedOpaqueSessionAndTimeout(t *testing.T) {
+	if err := validateOAuthRevokeInputs("opaque-session", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		session string
+		timeout time.Duration
+	}{
+		{timeout: time.Minute},
+		{session: "contains whitespace", timeout: time.Minute},
+		{session: strings.Repeat("x", 1025), timeout: time.Minute},
+		{session: "opaque", timeout: 0},
+		{session: "opaque", timeout: 5*time.Minute + time.Nanosecond},
+	} {
+		if err := validateOAuthRevokeInputs(test.session, test.timeout); err == nil {
+			t.Fatalf("accepted session length=%d timeout=%s", len(test.session), test.timeout)
+		}
+	}
+}
+
+func TestOAuthCallbackGateSerializesAndRetriesOnlyInvalidCallbacks(t *testing.T) {
+	var gate oauthCallbackGate
+	if !gate.begin() || gate.begin() {
+		t.Fatal("callback gate did not serialize processing")
+	}
+	gate.finish(oauthclient.ErrInvalidCallback)
+	if !gate.begin() {
+		t.Fatal("invalid callback incorrectly terminated the listener")
+	}
+	gate.finish(errors.New("terminal validated callback failure"))
+	if gate.begin() {
+		t.Fatal("terminal callback failure allowed another token exchange")
+	}
+}
+
+func TestOAuthCallbackGateNeverReopensAcrossTerminalFinishRace(t *testing.T) {
+	for range 1000 {
+		var gate oauthCallbackGate
+		if !gate.begin() {
+			t.Fatal("initial callback was not admitted")
+		}
+		start := make(chan struct{})
+		admitted := make(chan bool, 1)
+		finished := make(chan struct{})
+		go func() {
+			<-start
+			gate.finish(nil)
+			close(finished)
+		}()
+		go func() {
+			<-start
+			admitted <- gate.begin()
+		}()
+		close(start)
+		if <-admitted {
+			t.Fatal("callback was admitted during terminal transition")
+		}
+		<-finished
+		if gate.begin() {
+			t.Fatal("callback gate reopened after terminal completion")
+		}
+	}
+}
 
 func TestHappyViewProofRequiresExplicitProviderAndCommit(t *testing.T) {
 	valid := happyViewProofOptions{

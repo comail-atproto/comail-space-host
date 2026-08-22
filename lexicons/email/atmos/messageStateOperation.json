@@ -1,0 +1,37 @@
+{
+  "lexicon": 1,
+  "id": "email.atmos.messageStateOperation",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "ALPHA. Immutable operation claim created atomically with one message-state revision. Its deterministic key is scoped to the author repository, logical message, and operation ID, so a retry with changed payload collides instead of poisoning the revision graph.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": [
+          "logicalMessageId",
+          "operationId",
+          "revisionRkey"
+        ],
+        "properties": {
+          "logicalMessageId": {
+            "type": "string",
+            "minLength": 71,
+            "maxLength": 71
+          },
+          "operationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "revisionRkey": {
+            "type": "string",
+            "description": "Content-committing email.atmos.messageStateRevision record key.",
+            "minLength": 70,
+            "maxLength": 70
+          }
+        }
+      }
+    }
+  }
+}

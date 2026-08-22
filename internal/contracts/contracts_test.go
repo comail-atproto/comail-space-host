@@ -13,12 +13,16 @@ import (
 func TestLexiconsAreValidAndIDsMatchPaths(t *testing.T) {
 	root := filepath.Join("..", "..", "lexicons", "email", "atmos")
 	want := map[string]string{
-		"message.json":      "email.atmos.message",
-		"messageState.json": "email.atmos.messageState",
-		"folder.json":       "email.atmos.folder",
-		"blobChunk.json":    "email.atmos.blobChunk",
-		"blobManifest.json": "email.atmos.blobManifest",
-		"blobIndex.json":    "email.atmos.blobIndex",
+		"message.json":               "email.atmos.message",
+		"messageState.json":          "email.atmos.messageState",
+		"messageStateRevision.json":  "email.atmos.messageStateRevision",
+		"messageStateOperation.json": "email.atmos.messageStateOperation",
+		"folder.json":                "email.atmos.folder",
+		"folderRevision.json":        "email.atmos.folderRevision",
+		"folderOperation.json":       "email.atmos.folderOperation",
+		"blobChunk.json":             "email.atmos.blobChunk",
+		"blobManifest.json":          "email.atmos.blobManifest",
+		"blobIndex.json":             "email.atmos.blobIndex",
 	}
 	for name, wantID := range want {
 		data, err := os.ReadFile(filepath.Join(root, name))
@@ -36,6 +40,55 @@ func TestLexiconsAreValidAndIDsMatchPaths(t *testing.T) {
 		if doc.Lexicon != 1 || doc.ID != wantID || len(doc.Defs["main"]) == 0 {
 			t.Fatalf("%s: lexicon=%d id=%q main=%t", name, doc.Lexicon, doc.ID, len(doc.Defs["main"]) > 0)
 		}
+	}
+}
+
+func TestMailboxSpaceV3ContractIsExactAppendOnlyAuthority(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "contracts", "mailbox-space-v3.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		SpaceType               string   `json:"spaceType"`
+		Version                 int      `json:"version"`
+		AuthorityModel          string   `json:"authorityModel"`
+		RequiredWriteValidation bool     `json:"requiredWriteValidation"`
+		WriterActions           []string `json:"writerActions"`
+		Collections             []struct {
+			NSID      string `json:"nsid"`
+			Authority string `json:"authority"`
+		} `json:"collections"`
+		Recovery struct {
+			SourceAuthentication []string `json:"sourceAuthentication"`
+			BlobRead             string   `json:"blobRead"`
+			RequiresStableState  bool     `json:"requiresStableState"`
+			OfflineCARAuthority  bool     `json:"offlineCarIsAuthority"`
+		} `json:"recovery"`
+	}
+	if err := json.Unmarshal(data, &contract); err != nil {
+		t.Fatal(err)
+	}
+	wantCollections := []string{
+		"email.atmos.message",
+		"email.atmos.messageStateRevision",
+		"email.atmos.messageStateOperation",
+		"email.atmos.folderRevision",
+		"email.atmos.folderOperation",
+	}
+	if contract.SpaceType != "email.atmos.mailbox" || contract.Version != 3 ||
+		contract.AuthorityModel != "append-only" || !contract.RequiredWriteValidation ||
+		len(contract.WriterActions) != 1 || contract.WriterActions[0] != "create" ||
+		len(contract.Collections) != len(wantCollections) {
+		t.Fatalf("mailbox v3 contract widened or drifted: %#v", contract)
+	}
+	for index, want := range wantCollections {
+		if contract.Collections[index].NSID != want || contract.Collections[index].Authority != "immutable-create-only" {
+			t.Fatalf("mailbox v3 collection %d = %#v, want %q create-only", index, contract.Collections[index], want)
+		}
+	}
+	if strings.Join(contract.Recovery.SourceAuthentication, ",") != "getLatestCommit,getRepo,getLatestCommit" ||
+		contract.Recovery.BlobRead != "getBlob" || !contract.Recovery.RequiresStableState || contract.Recovery.OfflineCARAuthority {
+		t.Fatalf("mailbox v3 recovery boundary drifted: %#v", contract.Recovery)
 	}
 }
 
@@ -235,5 +288,139 @@ func TestOfficialSpacesAlphaAssessmentPinsExactFailClosedBuild(t *testing.T) {
 		if !strings.Contains(string(wrapper), required) {
 			t.Fatalf("official alpha wrapper is not bound to its lock/assessment: missing %q", required)
 		}
+	}
+}
+
+func TestOfficialSpacesAlphaMailboxValidationPinsExactIsolatedBuild(t *testing.T) {
+	root := filepath.Join("..", "..")
+	lockData, err := os.ReadFile(filepath.Join(root, "providers", "official-spaces-alpha-mailbox-validation.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(string(lockData), "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if found {
+			fields[key] = value
+		}
+	}
+	if fields["base_commit"] != "89deb9faca20e56fa2a262fe9746ed52bc1095ba" ||
+		fields["base_image"] != "ghcr.io/bluesky-social/atproto:pds-spaces-alpha" ||
+		fields["base_digest"] != "sha256:9641f3d5c4ce2bffeee3cd740284c7fc445ef4b4e2ba73f01bf19a59923d0dd4" ||
+		fields["platform"] != "linux/amd64" ||
+		fields["base_prepare_sha256"] != "625c47436ba5b551e24538dbafc7e28a10597f1d0c7609d8d7b08124c72f4746" ||
+		fields["patched_prepare_sha256"] != "3514e51518ff93e3f7d6e1d3533e064c77c79d4b0e82475ec5b1392eaa4cfa32" ||
+		fields["installer"] != "scripts/testdata/install-official-spaces-alpha-schemas.mjs" ||
+		fields["recipe"] != "scripts/testdata/official-spaces-alpha-schemas.Dockerfile" ||
+		fields["wrapper"] != "scripts/test-official-spaces-alpha-mailbox.sh" ||
+		fields["proof_source"] != "scripts/testdata/official-spaces-alpha-mailbox-proof/main.go" ||
+		fields["container_runner"] != "scripts/testdata/official-spaces-alpha-run-with-plc.sh" ||
+		fields["plc_mock"] != "scripts/testdata/official-spaces-alpha-plc-mock.mjs" ||
+		fields["tls_proxy"] != "scripts/testdata/official-spaces-alpha-tls-proxy.mjs" {
+		t.Fatalf("isolated mailbox-validation lock drifted: %#v", fields)
+	}
+	for _, key := range []string{"installer", "recipe", "wrapper", "proof_source", "container_runner", "plc_mock", "tls_proxy"} {
+		assertPinnedFile(t, root, fields[key], fields[key+"_sha256"])
+	}
+	for _, key := range []string{"schema_message", "schema_message_state_revision", "schema_message_state_operation", "schema_folder_revision", "schema_folder_operation"} {
+		assertPinnedFile(t, root, fields[key+"_path"], fields[key+"_sha256"])
+	}
+
+	assessmentData, err := os.ReadFile(filepath.Join(root, "providers", "official-spaces-alpha-mailbox-validation-assessment.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assessment struct {
+		Version int    `json:"version"`
+		Passed  bool   `json:"passed"`
+		Scope   string `json:"scope"`
+		Pins    struct {
+			BaseCommit      string `json:"baseCommit"`
+			BaseImage       string `json:"baseImage"`
+			Platform        string `json:"platform"`
+			PatchedPrepare  string `json:"patchedPrepareSHA256"`
+			InstallerSHA    string `json:"installerSHA256"`
+			RecipeSHA       string `json:"recipeSHA256"`
+			SchemaBundleSHA string `json:"schemaBundleSHA256"`
+		} `json:"pins"`
+		Checks struct {
+			BaseRejectsStrict   string `json:"unmodifiedBaseRejectsStrictSchemas"`
+			Validation          string `json:"mailboxLexiconValidation"`
+			ValidationFailures  string `json:"failClosedValidation"`
+			Atomic              string `json:"atomicApplyWrites"`
+			Prepare             string `json:"syntheticPrepare"`
+			Idempotency         string `json:"idempotencyRerun"`
+			Recovery            string `json:"sourceAuthenticatedRecovery"`
+			Projection          string `json:"freshProjectionRebuild"`
+			DPoP                string `json:"delegationAndDpop"`
+			HostedAcceptance    bool   `json:"hostedBlueskyAcceptance"`
+			AuthorityCertified  bool   `json:"authorityCertified"`
+			ActivationAttempted bool   `json:"activationAttempted"`
+		} `json:"checks"`
+		Limitations struct {
+			Schemas string `json:"schemas"`
+			OAuth   string `json:"oauth"`
+			Mail    string `json:"mail"`
+		} `json:"limitations"`
+	}
+	if err := json.Unmarshal(assessmentData, &assessment); err != nil {
+		t.Fatal(err)
+	}
+	if assessment.Version != 1 || !assessment.Passed ||
+		assessment.Pins.BaseCommit != fields["base_commit"] ||
+		assessment.Pins.BaseImage != fields["base_image"]+"@"+fields["base_digest"] ||
+		assessment.Pins.Platform != fields["platform"] ||
+		assessment.Pins.PatchedPrepare != fields["patched_prepare_sha256"] ||
+		assessment.Pins.InstallerSHA != fields["installer_sha256"] ||
+		assessment.Pins.RecipeSHA != fields["recipe_sha256"] ||
+		assessment.Pins.SchemaBundleSHA != fields["schema_bundle_sha256"] ||
+		!strings.HasPrefix(assessment.Checks.BaseRejectsStrict, "pass:") ||
+		assessment.Checks.Validation != "pass: all 311 create receipts returned validationStatus=valid across the exact five schemas" ||
+		!strings.Contains(assessment.Checks.ValidationFailures, "invalid known-schema") ||
+		!strings.Contains(assessment.Checks.ValidationFailures, "unknown-schema") ||
+		!strings.HasPrefix(assessment.Checks.Atomic, "pass:") ||
+		assessment.Checks.Prepare != "pass: captured=99 skipped=0 verified=99" ||
+		assessment.Checks.Idempotency != "pass: captured=0 skipped=99 verified=99" ||
+		!strings.Contains(assessment.Checks.Recovery, "signed stable CAR") ||
+		!strings.Contains(assessment.Checks.Projection, "fresh SQLite projections committed with mode 0600") ||
+		assessment.Checks.DPoP != "pass" || assessment.Checks.HostedAcceptance ||
+		assessment.Checks.AuthorityCertified || assessment.Checks.ActivationAttempted ||
+		!strings.Contains(assessment.Scope, "synthetic") ||
+		!strings.Contains(assessment.Limitations.Schemas, "not published") ||
+		!strings.Contains(assessment.Limitations.OAuth, "legacy access JWT") ||
+		!strings.Contains(assessment.Limitations.Mail, "no real mail") {
+		t.Fatalf("isolated mailbox-validation assessment overclaims or drifted: %#v", assessment)
+	}
+
+	wrapper, err := os.ReadFile(filepath.Join(root, "scripts", "test-official-spaces-alpha-mailbox.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"unmodifiedBaseRejectsStrictSchemas",
+		"schemaValidationAttempted == true",
+		"sourceAuthenticatedRecovery",
+		"freshProjectionRebuild",
+		"committed assessment does not match this exact proof run",
+		"comail.proof.run",
+	} {
+		if !strings.Contains(string(wrapper), required) {
+			t.Fatalf("isolated mailbox-validation wrapper is incomplete: missing %q", required)
+		}
+	}
+}
+
+func assertPinnedFile(t *testing.T, root, path, want string) {
+	t.Helper()
+	if path == "" || want == "" {
+		t.Fatalf("pinned path or digest is empty: path=%q digest=%q", path, want)
+	}
+	data, err := os.ReadFile(filepath.Join(root, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("%s SHA-256 = %s, want %s", path, got, want)
 	}
 }

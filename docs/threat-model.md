@@ -18,8 +18,11 @@ logs, and unauthenticated clients must not.
 
 - Exact DID/space/repo/provider binding; caller input never selects a target at
   SMTP time.
-- Space-scoped OAuth grants, durable DPoP keys, serialized refresh rotation,
-  proactive refresh, and explicit reconnect/revocation behavior.
+- Space-scoped OAuth grants, durable DPoP keys, serialized token updates, and
+  explicit reconnect/revocation behavior. A refreshed token cannot be used
+  until its returned scope is persisted and revalidated; the pinned OAuth
+  client does not expose that proof, so an expired token currently requires
+  interactive reauthorization instead of transparent refresh.
 - Authenticated requests never follow redirects and use bounded bodies/timeouts.
 - The operator-selected PDS origin is clean and exact; HTTPS DNS is resolved
   once, non-public answers and proxies are rejected, and TLS remains bound to
@@ -28,6 +31,20 @@ logs, and unauthenticated clients must not.
   possession of a CID alone is insufficient.
 - Immutable record hashes are checked before projection.
 - Mutable writes use CID compare-and-swap or an append-only alternative.
+- The official Spaces alpha commit signature does not sign the repository
+  hash with attacker-unforgeable binding material. Saved or caller-supplied
+  CARs are untrusted and cannot mint mailbox authority. Alpha recovery must be
+  one stable latest/CAR/latest read from the exact authenticated PDS, with
+  strict CAR consistency checks and target-bound opaque output.
+- Only that opaque live-source output may enter append-only mailbox reduction;
+  raw CAR bytes, record slices, snapshot IDs, and completeness flags cannot.
+  Reduced metadata/state remains non-projectable until each referenced blob is
+  fetched from the same exact target and its RFC 5322 bytes are hash-verified.
+- The byte-complete constructor accepts only the exact-target client and
+  internally performs a fresh source read. Blob reads re-resolve the current
+  PDS before authentication, bracket the full batch with source-matching
+  latest commits, validate every historical version, and emit no capability
+  on partial failure or more than 64 MiB of unique content.
 - Projectors use cross-process fencing and poison-record quarantine.
 - Queue and vault encryption keys live outside their databases and rotate.
 - Logs and evidence reject tokens and message-derived text; hashes and counts

@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestNewMessagePairNormalizesStateAndPreservesMigrationIdentity(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pair.Message.DeliveryFingerprint != pair.RKey || pair.State.Message != pair.RKey {
+	if pair.Message.DeliveryFingerprint != pair.RKey || pair.Message.LogicalMessageID != pair.RKey || pair.State.Message != pair.RKey {
 		t.Fatal("message and state are not tied to their deterministic rkey")
 	}
 	if got := strings.Join(pair.State.Keywords, ","); got != "$flagged,$seen" {
@@ -56,6 +57,30 @@ func TestNewMessagePairNormalizesStateAndPreservesMigrationIdentity(t *testing.T
 	}
 }
 
+func TestLogicalMessageIdentitySurvivesSourceContentVersions(t *testing.T) {
+	first := ImportedMessage{
+		RecipientDID: "did:plc:alice", SourceKey: "jmap:account:draft-1",
+		Raw: []byte("Subject: draft\r\n\r\nfirst"), Mailbox: "drafts",
+	}
+	second := first
+	second.Raw = []byte("Subject: draft\r\n\r\nsecond")
+	firstFingerprint, secondFingerprint := ImportedFingerprint(first), ImportedFingerprint(second)
+	if firstFingerprint == secondFingerprint {
+		t.Fatal("content versions shared an immutable record key")
+	}
+	firstLogical := LogicalMessageID(first.RecipientDID, first.SourceKey, firstFingerprint)
+	secondLogical := LogicalMessageID(second.RecipientDID, second.SourceKey, secondFingerprint)
+	if firstLogical != secondLogical || len(firstLogical) != 71 || !strings.HasPrefix(firstLogical, "sha256-") {
+		t.Fatalf("logical IDs = %q and %q", firstLogical, secondLogical)
+	}
+	if got := LogicalMessageID("did:plc:bob", first.SourceKey, firstFingerprint); got == firstLogical {
+		t.Fatal("logical ID was not scoped to the recipient repository")
+	}
+	if got := LogicalMessageID(first.RecipientDID, "jmap:account:draft-2", firstFingerprint); got == firstLogical {
+		t.Fatal("distinct source identities collided")
+	}
+}
+
 func TestValidateStoredMessageRejectsByteSubstitution(t *testing.T) {
 	raw := []byte("Subject: private\r\n\r\nsecret\r\n")
 	blob := BlobRef{Type: "blob", Ref: CIDLink{Link: "bafk-private"}, MIMEType: MessageMIMEType, Size: int64(len(raw))}
@@ -66,10 +91,35 @@ func TestValidateStoredMessageRejectsByteSubstitution(t *testing.T) {
 	if err := ValidateStoredMessage("did:plc:alice", pair.RKey, pair.Message, raw); err != nil {
 		t.Fatalf("valid record: %v", err)
 	}
+	encoded, err := json.Marshal(pair.Message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyWire map[string]any
+	if err := json.Unmarshal(encoded, &legacyWire); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacyWire, "logicalMessageId")
+	encoded, err = json.Marshal(legacyWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy MessageRecord
+	if err := json.Unmarshal(encoded, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateStoredMessage("did:plc:alice", pair.RKey, legacy, raw); err != nil {
+		t.Fatalf("immutable pre-logical-ID record: %v", err)
+	}
 	changed := append([]byte(nil), raw...)
 	changed[len(changed)-2] = '!'
 	if err := ValidateStoredMessage("did:plc:alice", pair.RKey, pair.Message, changed); err == nil {
 		t.Fatal("changed blob bytes were accepted")
+	}
+	tampered := pair.Message
+	tampered.LogicalMessageID = "sha256-" + strings.Repeat("0", 64)
+	if err := ValidateStoredMessage("did:plc:alice", pair.RKey, tampered, raw); err == nil {
+		t.Fatal("changed logical identity was accepted")
 	}
 }
 
@@ -82,5 +132,16 @@ func TestFolderIdentityIsDeterministicButNameSensitive(t *testing.T) {
 	}
 	if a.RKey == c.RKey {
 		t.Fatal("case-preserved source folders collided")
+	}
+}
+
+func TestV3FolderUIDValidityUsesStableFolderIdentityNotDisplayName(t *testing.T) {
+	const repoDID = "did:plc:alice"
+	const folderID = "folder-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	first := StableFolderUIDValidity(repoDID, folderID)
+	second := StableFolderUIDValidity(repoDID, folderID)
+	other := StableFolderUIDValidity(repoDID, "folder-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if first == 0 || first != second || first == other {
+		t.Fatalf("stable folder UIDVALIDITY first=%d second=%d other=%d", first, second, other)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,8 @@ const (
 	formatVersion  = 2
 	keyBytes       = 32
 	maxVaultBytes  = 8 * 1024 * 1024
+	maxRecordBytes = 64 * 1024
+	maxRecords     = 4096
 	authRequestTTL = 15 * time.Minute
 )
 
@@ -39,11 +42,17 @@ type diskState struct {
 	Version  int                                `json:"version"`
 	Sessions map[string]oauth.ClientSessionData `json:"sessions"`
 	Requests map[string]storedAuthRequest       `json:"requests"`
+	Records  map[string]storedRecord            `json:"records,omitempty"`
 }
 
 type storedAuthRequest struct {
 	Data    oauth.AuthRequestData `json:"data"`
 	SavedAt string                `json:"savedAt"`
+}
+
+type storedRecord struct {
+	Value     []byte `json:"value"`
+	ExpiresAt string `json:"expiresAt,omitempty"`
 }
 
 type Store struct {
@@ -191,6 +200,147 @@ func (s *Store) DeleteAuthRequestInfo(ctx context.Context, stateID string) error
 	})
 }
 
+// CreateRecord persists one bounded encrypted application record without
+// replacing an existing live value. Record names and values are encrypted as
+// part of the vault and never appear in a filename.
+func (s *Store) CreateRecord(ctx context.Context, name string, value []byte, expiresAt time.Time) error {
+	if err := validateRecord(name, value, expiresAt, s.now().UTC()); err != nil {
+		return err
+	}
+	return s.mutate(ctx, func(state *diskState) error {
+		s.pruneExpired(state)
+		if _, exists := state.Records[name]; exists {
+			return ErrAlreadyExists
+		}
+		if len(state.Records) >= maxRecords {
+			return errors.New("authvault: record count exceeds safety bound")
+		}
+		state.Records[name] = newStoredRecord(value, expiresAt)
+		return nil
+	})
+}
+
+// SetRecord atomically replaces one bounded encrypted application record.
+func (s *Store) SetRecord(ctx context.Context, name string, value []byte, expiresAt time.Time) error {
+	if err := validateRecord(name, value, expiresAt, s.now().UTC()); err != nil {
+		return err
+	}
+	return s.mutate(ctx, func(state *diskState) error {
+		s.pruneExpired(state)
+		if _, exists := state.Records[name]; !exists && len(state.Records) >= maxRecords {
+			return errors.New("authvault: record count exceeds safety bound")
+		}
+		state.Records[name] = newStoredRecord(value, expiresAt)
+		return nil
+	})
+}
+
+// CompareAndSwapRecord atomically replaces a live encrypted application
+// record only when its current plaintext value exactly matches expected. A nil
+// expected value means the record must be absent (or expired). The boolean is
+// false for a stale comparison and no write is performed.
+func (s *Store) CompareAndSwapRecord(
+	ctx context.Context,
+	name string,
+	expected, replacement []byte,
+	expiresAt time.Time,
+) (bool, error) {
+	if err := validateRecord(name, replacement, expiresAt, s.now().UTC()); err != nil {
+		return false, err
+	}
+	swapped := false
+	err := s.mutate(ctx, func(state *diskState) error {
+		s.pruneExpired(state)
+		current, exists := state.Records[name]
+		if expected == nil {
+			if exists {
+				return nil
+			}
+		} else if !exists || !equalBytes(current.Value, expected) {
+			return nil
+		}
+		if !exists && len(state.Records) >= maxRecords {
+			return errors.New("authvault: record count exceeds safety bound")
+		}
+		state.Records[name] = newStoredRecord(replacement, expiresAt)
+		swapped = true
+		return nil
+	})
+	return swapped, err
+}
+
+// CompareAndDeleteRecord atomically deletes one live encrypted application
+// record only when its current plaintext value exactly matches expected. It is
+// the destructive counterpart to CompareAndSwapRecord: callers that perform a
+// remote cleanup first can prove they are deleting the exact state they acted
+// on rather than a concurrently replaced value.
+func (s *Store) CompareAndDeleteRecord(ctx context.Context, name string, expected []byte) (bool, error) {
+	if err := validateRecordName(name); err != nil {
+		return false, err
+	}
+	if len(expected) == 0 || len(expected) > maxRecordBytes {
+		return false, errors.New("authvault: record comparison exceeds safety bound")
+	}
+	deleted := false
+	err := s.mutate(ctx, func(state *diskState) error {
+		s.pruneExpired(state)
+		current, exists := state.Records[name]
+		if !exists || !equalBytes(current.Value, expected) {
+			return nil
+		}
+		delete(state.Records, name)
+		deleted = true
+		return nil
+	})
+	return deleted, err
+}
+
+func (s *Store) GetRecord(ctx context.Context, name string) ([]byte, error) {
+	if err := validateRecordName(name); err != nil {
+		return nil, err
+	}
+	var out []byte
+	err := s.read(ctx, func(state diskState) error {
+		record, exists := state.Records[name]
+		if !exists || recordExpired(record, s.now().UTC()) {
+			return ErrNotFound
+		}
+		out = append([]byte(nil), record.Value...)
+		return nil
+	})
+	return out, err
+}
+
+// ConsumeRecord atomically returns and deletes a live application record.
+// It is intended for single-use browser and OAuth flow state.
+func (s *Store) ConsumeRecord(ctx context.Context, name string) ([]byte, error) {
+	if err := validateRecordName(name); err != nil {
+		return nil, err
+	}
+	var out []byte
+	err := s.mutate(ctx, func(state *diskState) error {
+		record, exists := state.Records[name]
+		if !exists || recordExpired(record, s.now().UTC()) {
+			delete(state.Records, name)
+			return ErrNotFound
+		}
+		out = append([]byte(nil), record.Value...)
+		delete(state.Records, name)
+		return nil
+	})
+	return out, err
+}
+
+func (s *Store) DeleteRecord(ctx context.Context, name string) error {
+	if err := validateRecordName(name); err != nil {
+		return err
+	}
+	return s.mutate(ctx, func(state *diskState) error {
+		delete(state.Records, name)
+		return nil
+	})
+}
+
 func (s *Store) read(ctx context.Context, use func(diskState) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -272,6 +422,9 @@ func (s *Store) readLocked() (diskState, error) {
 	if err := json.Unmarshal(plaintext, &state); err != nil || state.Version != formatVersion || state.Sessions == nil || state.Requests == nil {
 		return diskState{}, ErrDecrypt
 	}
+	if state.Records == nil {
+		state.Records = map[string]storedRecord{}
+	}
 	return state, nil
 }
 
@@ -334,7 +487,10 @@ func (s *Store) writeLocked(state diskState) error {
 }
 
 func newDiskState() diskState {
-	return diskState{Version: formatVersion, Sessions: map[string]oauth.ClientSessionData{}, Requests: map[string]storedAuthRequest{}}
+	return diskState{
+		Version: formatVersion, Sessions: map[string]oauth.ClientSessionData{}, Requests: map[string]storedAuthRequest{},
+		Records: map[string]storedRecord{},
+	}
 }
 
 func (s *Store) pruneExpired(state *diskState) {
@@ -345,6 +501,47 @@ func (s *Store) pruneExpired(state *diskState) {
 			delete(state.Requests, stateID)
 		}
 	}
+	for name, record := range state.Records {
+		if recordExpired(record, now) {
+			delete(state.Records, name)
+		}
+	}
+}
+
+func validateRecord(name string, value []byte, expiresAt, now time.Time) error {
+	if err := validateRecordName(name); err != nil {
+		return err
+	}
+	if len(value) == 0 || len(value) > maxRecordBytes {
+		return errors.New("authvault: record value exceeds safety bound")
+	}
+	if !expiresAt.IsZero() && !expiresAt.UTC().After(now) {
+		return errors.New("authvault: record expiry must be in the future")
+	}
+	return nil
+}
+
+func validateRecordName(name string) error {
+	if len(name) == 0 || len(name) > 160 || strings.TrimSpace(name) != name || strings.ContainsAny(name, "\x00\r\n\t ") {
+		return errors.New("authvault: record name is invalid")
+	}
+	return nil
+}
+
+func newStoredRecord(value []byte, expiresAt time.Time) storedRecord {
+	record := storedRecord{Value: append([]byte(nil), value...)}
+	if !expiresAt.IsZero() {
+		record.ExpiresAt = expiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return record
+}
+
+func recordExpired(record storedRecord, now time.Time) bool {
+	if record.ExpiresAt == "" {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, record.ExpiresAt)
+	return err != nil || !expiresAt.After(now)
 }
 
 func sessionKey(did syntax.DID, sessionID string) string { return did.String() + "\x00" + sessionID }

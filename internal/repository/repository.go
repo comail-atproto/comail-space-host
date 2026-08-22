@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 )
 
@@ -33,20 +34,61 @@ func (t Target) ValidateFor(recipientDID string) error {
 	if recipientDID != "" && t.RepoDID != recipientDID {
 		return ErrTarget
 	}
-	legacyPrefix := "at://" + t.RepoDID + "/space/"
-	standardPrefix := "ats://" + t.RepoDID + "/"
-	spaceName := t.SpaceURI
-	switch {
-	case strings.HasPrefix(spaceName, legacyPrefix):
-		spaceName = strings.TrimPrefix(spaceName, legacyPrefix)
-	case strings.HasPrefix(spaceName, standardPrefix):
-		spaceName = strings.TrimPrefix(spaceName, standardPrefix)
-	default:
+	if _, err := syntax.ParseDID(t.RepoDID); err != nil || !strings.HasPrefix(t.SpaceURI, "at://") {
 		return ErrTarget
 	}
-	spaceType, spaceKey, found := strings.Cut(spaceName, "/")
-	if !found || spaceType == "" || !strings.Contains(spaceType, ".") || spaceKey == "" ||
-		strings.ContainsAny(spaceName, "?# \t\r\n") || strings.Contains(spaceKey, "/") || spaceKey == "." || spaceKey == ".." {
+	spaceAuthority, path, found := strings.Cut(strings.TrimPrefix(t.SpaceURI, "at://"), "/")
+	if _, err := syntax.ParseDID(spaceAuthority); !found || err != nil {
+		return ErrTarget
+	}
+	segments := strings.Split(path, "/")
+	if len(segments) != 3 || segments[0] != "space" {
+		return ErrTarget
+	}
+	spaceType, spaceKey := segments[1], segments[2]
+	if _, err := syntax.ParseNSID(spaceType); err != nil || spaceType != mailbox.MailboxSpaceType {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseRecordKey(spaceKey); err != nil || strings.ContainsAny(path, "?# \t\r\n") {
+		return ErrTarget
+	}
+	return nil
+}
+
+// RecordURI constructs the exact official permissioned-repo record address.
+// The space authority is in SpaceURI; the distinct record-author repository
+// DID is the first path segment after the space prefix.
+func RecordURI(target Target, collection, rkey string) (string, error) {
+	if err := target.ValidateFor(target.RepoDID); err != nil {
+		return "", ErrTarget
+	}
+	if _, err := syntax.ParseNSID(collection); err != nil {
+		return "", ErrTarget
+	}
+	if _, err := syntax.ParseRecordKey(rkey); err != nil {
+		return "", ErrTarget
+	}
+	return target.SpaceURI + "/" + target.RepoDID + "/" + collection + "/" + rkey, nil
+}
+
+// ValidateRecordURI validates the provider-authenticated v2 record address.
+// Legacy service-auth adapters may author records under a pinned service DID;
+// official member-authored v3 code must additionally compare against RecordURI.
+func ValidateRecordURI(target Target, uri, collection, rkey string) error {
+	if err := target.ValidateFor(target.RepoDID); err != nil || !strings.HasPrefix(uri, target.SpaceURI+"/") {
+		return ErrTarget
+	}
+	segments := strings.Split(strings.TrimPrefix(uri, target.SpaceURI+"/"), "/")
+	if len(segments) != 3 || segments[1] != collection || segments[2] != rkey {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseDID(segments[0]); err != nil {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseNSID(segments[1]); err != nil {
+		return ErrTarget
+	}
+	if _, err := syntax.ParseRecordKey(segments[2]); err != nil {
 		return ErrTarget
 	}
 	return nil

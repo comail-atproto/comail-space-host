@@ -16,9 +16,10 @@ state. Stable UID/UIDVALIDITY migration hints are retained in permissioned
 records so deleting and rebuilding a projection does not unnecessarily reset
 existing IMAP clients.
 
-## Provider-neutral repository contract
+## Legacy v2 provider contract
 
-The lab talks to a provider through five operations:
+The certified HappyView/rsky laboratory path talks to a provider through five
+legacy v2 operations:
 
 1. create or discover an exact mailbox space;
 2. upload one RFC 5322 blob into the authenticated user's repo;
@@ -29,6 +30,15 @@ The lab talks to a provider through five operations:
 Full rebuild requires only authenticated `listRecords` and `getBlob`. Oplog,
 CAR export, and notifications are certified accelerators, not correctness
 requirements.
+
+Official Spaces v3 does not implement this mutable contract. It is a separate,
+append-only protocol with member-authored creates, immutable message records,
+message/folder revision streams, and operation claims. In the pinned alpha,
+the signed commit authenticates its context but does not sign the repository
+hash with attacker-unforgeable binding material. The authenticated PDS is
+therefore the recovery authority; a saved CAR is not standalone author proof.
+The client deliberately does not implement the legacy repository interface or
+advertise a v2 authority certificate.
 
 The unmodified pinned rsky epoch does not satisfy operation 3 for records which
 reference blobs. The lab's exact pinned patch verifies/promotes referenced
@@ -55,6 +65,71 @@ the reconstructed message are verified with SHA-256 and bounded at 10 MiB.
 This shim preserves the provider-neutral Comail mailbox model and proves the
 full migration/rebuild path today. It is not a proposal to standardize chunked
 email records; a ratified private-blob facility can replace only this adapter.
+
+### Official Spaces v3 transport
+
+`internal/providers/officialspaces` is a production-dark transport pinned to
+the exact reviewed alpha epoch. The writer lane asks an exact-target broker for
+one scoped steady member OAuth capability per operation, closes it afterward,
+and exposes only RFC 5322 blob upload plus atomic create batches. Every batch
+is forced to `validate=true`; only the five v3
+append-only mailbox collections are admitted, and every result must be a
+member-authored create with `validationStatus=valid`, the exact record URI, and
+a valid DAG-CBOR CID. Blob receipts and downloads are bound to their raw
+SHA-256 CID.
+
+The reader lane acquires a fresh delegated DPoP space credential for each
+read/recovery operation and destroys it afterward. Record and blob listings
+are bounded diagnostic surfaces only: pagination is not commit-pinned and can
+never construct authority. Raw CAR streaming similarly returns no verified
+capability.
+
+The source-authenticated recovery reader uses one scoped credential to fetch
+the latest commit, the full CAR, and the latest commit again. It requires the
+freshly resolved member-repo PDS endpoint to equal the configured origin, the
+same revision and LtHash digest across all three responses, exact ordered CAR
+roots and blocks, canonical DAG-CBOR, matching CIDs and record types, full
+stream exhaustion, exact target context, valid signature/MAC, and fixed byte
+and item limits. Its opaque result is bound to origin, space, member repo,
+epoch, revision, and both CAR roots. This is a stable read from the trusted
+PDS, not proof that an arbitrary holder's CAR was authored by the member; an
+uploaded, cached, or offline CAR can never construct the capability.
+
+Mailbox recovery accepts only that concrete source capability. It strictly
+decodes the five append-only collections, rejects orphan or mismatched
+operation claims and immutable versions, reduces every causal folder and
+message-state graph, proves the complete canonical standard-folder set, and
+returns another opaque target/snapshot-bound sealed value. No raw CAR, record
+slice, snapshot ID, or completeness boolean can enter the production reducer.
+The CAR contains blob references rather than RFC 5322 blob bytes, so each
+selected message blob must still be fetched from the same exact target and
+pass `mailbox.ValidateStoredMessage` before projection or recovery can claim
+message-content integrity.
+
+The byte-complete recovery constructor takes only the pinned official client;
+it performs a fresh source read and reduction internally, derives every
+immutable message-version CID, and downloads each unique blob under one scoped
+credential. Fresh signed latest-commit reads before and after the blob batch
+must still equal the source revision and LtHash, and the member DID must still
+resolve to the exact PDS origin before authentication. Every referencing
+message record is byte-validated. The production-dark in-memory capability is
+closeable, redacted, sealed, and capped at 64 MiB of unique message bytes;
+larger recovery requires a separately reviewed encrypted streaming/spooling
+design before activation.
+
+The official v3 projector accepts only that sealed byte-complete capability.
+It creates a new absolute SQLite destination with mode 0600, deterministically
+projects the seven canonical folders and each live state's selected immutable
+message version, omits superseded versions and tombstones, and deletes the
+database plus SQLite sidecars on any failure. Its semantic manifest is stable
+across equivalent source visitation order and persisted-PDS restart. This is a
+recovery proof target; it does not claim that a destroyed Stalwart instance has
+yet been rebuilt and queried through JMAP/IMAP.
+
+This transport is not registered in `cmd/comail-space-host`, has no public HTTP
+route, certificate, relay binding, worker, or activation path, and cannot make
+hosted alpha writes until that PDS deploys third-party Lexicon resolution and
+accepts the byte-pinned `email.atmos.*` alpha schemas under mandatory validation.
 
 ## Data model
 
@@ -115,19 +190,38 @@ would keep it as a rollback artifact under the existing retention policy.
 
 ## OAuth session boundary
 
-The lab requests one exact `space:email.atmos.mailbox` grant bound to
-`authority=self` and one explicit space key. Record mutations are restricted
-to the three mailbox collections; whole-space read is requested because the
-pinned provider's referenced-blob read path currently authorizes an
-unqualified read request. Blob upload is limited to `message/rfc822`.
+The official Spaces profile uses two separate browser authorizations. A
+one-time provisioning grant is bound to the exact authority DID and exact
+mailbox key and carries only `action=read_self&manage=create`. It explicitly
+freezes the declaration's exact five collections because the alpha otherwise
+expands an omitted collection set to those declaration defaults. Those
+collections add no record-write action; wildcard, create, update, and delete
+record actions remain absent. The grant creates or reconciles a
+member-list/open-app space, proves that the fresh space has zero explicit
+members (the owner is implicit), then revokes both OAuth tokens and deletes the
+encrypted local session before reporting success.
+
+The steady grant is separately bound to that exact DID and key. It carries
+only `read` and `create` over the five append-only mailbox collections plus a
+`message/rfc822` blob scope. It has no wildcard, update, delete, or space
+management permission. Refresh is fail-closed because provider-normalized
+replacement scopes cannot be independently verified; an expired or invalid
+token requires interactive reauthorization.
 
 OAuth discovery, token exchange, refresh, and authenticated XRPC calls use one
 operator-pinned origin. HTTPS addresses are resolved once, private/link-local
 answers are rejected, proxies are disabled, TLS uses the original hostname,
 and redirects are refused. The callback is an exact IPv4 loopback URL.
-Session and pending-flow state are stored in an AES-256-GCM file with a separate
-32-byte key; both files and their directory are private and updates are
-fsync/rename atomic under a cross-process lock.
+Session and pending-flow state are stored in an AES-256-GCM file with a
+separate 32-byte key; both files and their directory are private and updates
+are fsync/rename atomic under a cross-process lock. The production adapter
+never receives or persists these browser OAuth credentials.
+
+Explicit steady-session cleanup revalidates the exact DID, origin, space key,
+and grant before acting. It confirms remote revocation of both access and
+refresh tokens before deleting encrypted local state. If remote revocation is
+not confirmed, the encrypted session is retained for a bounded retry rather
+than discarding the only remaining revocation handle.
 
 The HappyView proof uses HappyView's own OAuth flow against the user's current
 PDS. Its signed HttpOnly dashboard cookie is captured through a random one-use
@@ -135,7 +229,19 @@ URL on a second exact IPv4 loopback port (cookies are host-scoped, not
 port-scoped), then stored create-only with mode 0600. Provider requests disable
 proxies and redirects and refuse any non-loopback destination.
 
-## Production service-grant boundary
+## Official v3 production credential boundary
+
+Official writes are authored by the member and the alpha accepts member OAuth,
+not a delegated space credential, for blob upload and `applyWrites`. The lab's
+encrypted steady browser session can exercise that path interactively, but it
+is not an unattended SMTP credential design. Production needs a separately
+reviewed exact-target broker that retains encrypted sessions outside the relay
+and adapter, exposes only operation callbacks, fails closed on scope drift or
+expiry, and requires interactive reauthorization when the SDK cannot prove a
+refresh preserved the exact grant. Until that lifecycle and its revocation
+controls are certified, official v3 prepare and delivery remain unavailable.
+
+## Legacy compatibility service-grant boundary
 
 The production adapter does not retain the lab browser OAuth session. The
 space owner grants the published adapter `did:web` identity write membership

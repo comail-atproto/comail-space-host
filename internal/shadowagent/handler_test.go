@@ -70,8 +70,10 @@ func TestHandlerAuthorityInventoryAndCASState(t *testing.T) {
 		t.Fatal(err)
 	}
 	certificate := strings.Repeat("a", 64)
+	serviceAuthorDID := "did:web:service.comail.example"
+	providerRepo := recordAuthorRepository{Repository: repo, authorDID: serviceAuthorDID}
 	handler, err := NewHandler(Config{
-		Token: "test-token", DID: agentTestDID, Target: target, Repository: repo,
+		Token: "test-token", DID: agentTestDID, Target: target, Repository: providerRepo,
 		AuthorityCertificateSHA256: certificate,
 	})
 	if err != nil {
@@ -104,6 +106,10 @@ func TestHandlerAuthorityInventoryAndCASState(t *testing.T) {
 	}
 	if inventory.Code != http.StatusOK || listed.ProviderID != repo.ProviderID() || len(listed.Messages) != 1 || string(listed.Messages[0].Raw) != string(raw) || listed.Messages[0].Revision != 1 {
 		t.Fatalf("inventory status=%d body=%s", inventory.Code, inventory.Body.String())
+	}
+	wantURI := target.SpaceURI + "/" + serviceAuthorDID + "/" + mailbox.MessageCollection + "/" + fingerprint
+	if listed.Messages[0].URI != wantURI || listed.Messages[0].LogicalMessageID != fingerprint {
+		t.Fatalf("inventory identity uri=%q logical=%q", listed.Messages[0].URI, listed.Messages[0].LogicalMessageID)
 	}
 	mutated := performAgentRequest(t, handler, "/v2/state", stateMutationRequest{
 		Version: AuthorityProtocolVersion, Target: wireTarget,
@@ -139,6 +145,19 @@ func TestHandlerAuthorityInventoryAndCASState(t *testing.T) {
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("stale conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
+}
+
+type recordAuthorRepository struct {
+	repository.Repository
+	authorDID string
+}
+
+func (repo recordAuthorRepository) GetRecord(ctx context.Context, target repository.Target, collection, rkey string) (repository.Record, error) {
+	record, err := repo.Repository.GetRecord(ctx, target, collection, rkey)
+	if err == nil {
+		record.URI = target.SpaceURI + "/" + repo.authorDID + "/" + collection + "/" + rkey
+	}
+	return record, err
 }
 
 func TestHandlerAuthorityInventoryPreservesImportedSourceIdentity(t *testing.T) {
@@ -272,6 +291,10 @@ func TestHandlerCapturesAndAtomicallyVersionsEditedDraft(t *testing.T) {
 		if message.SourceKey != sourceKey {
 			t.Fatalf("source key=%q", message.SourceKey)
 		}
+		wantLogical := mailbox.LogicalMessageID(agentTestDID, sourceKey, message.Fingerprint)
+		if message.LogicalMessageID != wantLogical {
+			t.Fatalf("logical ID=%q want %q", message.LogicalMessageID, wantLogical)
+		}
 		if message.Tombstoned {
 			tombstoned++
 			if len(message.Raw) != 0 {
@@ -374,6 +397,7 @@ func TestHandlerInventoryNormalizesExistingStandardFolderNamesToRoles(t *testing
 		{name: "Archive", role: "archive"},
 		{name: "Drafts", role: "drafts"},
 		{name: "Sent", role: "sent"},
+		{name: "Important", role: "important"},
 	}
 	for index, folder := range roles {
 		raw := []byte(fmt.Sprintf("Message-ID: <legacy-role-%d@test>\r\nSubject: legacy role\r\n\r\nbody", index))

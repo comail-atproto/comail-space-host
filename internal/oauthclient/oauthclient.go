@@ -13,44 +13,76 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/comail-atproto/comail-space-host/internal/mailbox"
 	"github.com/comail-atproto/comail-space-host/internal/repository"
+	"github.com/comail-atproto/comail-space-host/internal/spaceprovision"
 )
+
+var (
+	ErrInvalidCallback         = errors.New("oauthclient: invalid OAuth callback")
+	ErrReauthorizationRequired = errors.New("oauthclient: interactive reauthorization required")
+	ErrCleanupRetained         = errors.New("oauthclient: encrypted OAuth session retained for retry")
+)
+
+const maxDPoPNonceBytes = 1024
 
 type Config struct {
 	DID         string
 	Handle      string
 	Origin      string
 	CallbackURL string
+	ClientID    string
 	SpaceKey    string
 	AllowHTTP   bool
 }
 
-type Manager struct {
-	app    *oauth.ClientApp
-	did    syntax.DID
-	handle syntax.Handle
-	origin string
-	scopes []string
-	client *http.Client
+type StartResult struct {
+	AuthorizationURL string
+	State            string
 }
 
-func MailboxScopes(spaceKey string) ([]string, error) {
-	if spaceKey == "" || strings.ContainsAny(spaceKey, "&=?# /+") {
-		return nil, errors.New("oauthclient: safe exact space key is required")
-	}
-	spaceScope := "space:" + mailbox.MailboxSpaceType + "?authority=self&skey=" + url.QueryEscape(spaceKey) +
-		"&collection=" + mailbox.MessageCollection +
-		"&collection=" + mailbox.MessageStateCollection +
-		"&collection=" + mailbox.FolderCollection +
-		"&action=read&action=create&action=update&action=delete&manage=create&manage=update&manage=delete"
-	return []string{"atproto", "blob:" + mailbox.MessageMIMEType, spaceScope}, nil
+// ProvisioningOutcome carries the exact space result plus an opaque cleanup
+// handle only when the encrypted one-time session could not be fully revoked
+// and deleted. Callers must persist the handle privately and never log it.
+type ProvisioningOutcome struct {
+	Result            spaceprovision.Result
+	RetainedSessionID string
 }
+
+type retainedSessionError struct {
+	sessionID string
+	err       error
+}
+
+func (e *retainedSessionError) Error() string { return e.err.Error() }
+func (e *retainedSessionError) Unwrap() error { return e.err }
+
+type Manager struct {
+	app       *oauth.ClientApp
+	did       syntax.DID
+	handle    syntax.Handle
+	origin    string
+	spaceKey  string
+	client    *http.Client
+	profile   grantProfile
+	allowHTTP bool
+}
+
+type grantProfile uint8
+
+const (
+	grantSteady grantProfile = iota
+	grantProvisioning
+)
 
 func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
+	return newManager(cfg, store, grantSteady)
+}
+
+func newManager(cfg Config, store oauth.ClientAuthStore, profile grantProfile) (*Manager, error) {
 	if store == nil {
 		return nil, errors.New("oauthclient: encrypted auth store is required")
 	}
@@ -62,20 +94,30 @@ func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oauthclient: parse exact handle: %w", err)
 	}
-	callback, err := url.Parse(cfg.CallbackURL)
-	if err != nil || callback.Scheme != "http" || callback.Hostname() != "127.0.0.1" || callback.Port() == "" || callback.Path != "/oauth/callback" || callback.User != nil || callback.RawQuery != "" || callback.Fragment != "" {
-		return nil, errors.New("oauthclient: callback must be exact http://127.0.0.1:PORT/oauth/callback")
-	}
-	client, origin, err := newPinnedHTTPClient(cfg.Origin, cfg.AllowHTTP)
+	publicClient, err := validateClientLocation(cfg.CallbackURL, cfg.ClientID)
 	if err != nil {
 		return nil, err
 	}
-	scopes, err := MailboxScopes(cfg.SpaceKey)
+	client, origin, err := NewPinnedHTTPClient(cfg.Origin, cfg.AllowHTTP)
 	if err != nil {
 		return nil, err
 	}
-	oauthConfig := oauth.NewLocalhostConfig(cfg.CallbackURL, scopes)
-	app := oauth.NewClientApp(&oauthConfig, store)
+	var scopes []string
+	if profile == grantProvisioning {
+		scopes, err = ProvisioningScopes(did.String(), cfg.SpaceKey)
+	} else {
+		scopes, err = MailboxScopes(did.String(), cfg.SpaceKey)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var oauthConfig oauth.ClientConfig
+	if publicClient {
+		oauthConfig = oauth.NewPublicConfig(cfg.ClientID, cfg.CallbackURL, scopes)
+	} else {
+		oauthConfig = oauth.NewLocalhostConfig(cfg.CallbackURL, scopes)
+	}
+	app := oauth.NewClientApp(&oauthConfig, trackingAuthStore{ClientAuthStore: store})
 	app.Client = client
 	app.Resolver.Client = client
 	directory := identity.NewMockDirectory()
@@ -86,39 +128,147 @@ func New(cfg Config, store oauth.ClientAuthStore) (*Manager, error) {
 		},
 	})
 	app.Dir = directory
-	return &Manager{app: app, did: did, handle: handle, origin: origin, scopes: scopes, client: client}, nil
+	return &Manager{
+		app: app, did: did, handle: handle, origin: origin, spaceKey: cfg.SpaceKey,
+		client: client, profile: profile, allowHTTP: cfg.AllowHTTP,
+	}, nil
 }
 
 func (m *Manager) Start(ctx context.Context) (string, error) {
+	started, err := m.StartDetailed(ctx)
+	return started.AuthorizationURL, err
+}
+
+func (m *Manager) StartDetailed(ctx context.Context) (StartResult, error) {
+	if m == nil || m.app == nil {
+		return StartResult{}, errors.New("oauthclient: OAuth manager is required")
+	}
+	captured := make(chan string, 1)
+	ctx = context.WithValue(ctx, authStateCaptureKey{}, captured)
 	authorizeURL, err := m.app.StartAuthFlow(ctx, m.handle.String())
 	if err != nil {
-		return "", fmt.Errorf("oauthclient: start flow: %w", err)
+		return StartResult{}, fmt.Errorf("oauthclient: start flow: %w", err)
 	}
 	u, err := url.Parse(authorizeURL)
 	if err != nil || !sameOrigin(u, m.origin) || u.User != nil || u.Fragment != "" {
-		return "", fmt.Errorf("%w: authorization URL escaped pinned provider", repository.ErrTarget)
+		return StartResult{}, fmt.Errorf("%w: authorization URL escaped pinned provider", repository.ErrTarget)
 	}
-	return authorizeURL, nil
+	select {
+	case state := <-captured:
+		if state == "" {
+			return StartResult{}, errors.New("oauthclient: OAuth request supplied no state")
+		}
+		return StartResult{AuthorizationURL: authorizeURL, State: state}, nil
+	default:
+		return StartResult{}, errors.New("oauthclient: OAuth request state was not persisted")
+	}
+}
+
+func (m *Manager) ClientMetadata() oauth.ClientMetadata {
+	if m == nil || m.app == nil || m.app.Config == nil {
+		return oauth.ClientMetadata{}
+	}
+	return m.app.Config.ClientMetadata()
 }
 
 func (m *Manager) Finish(ctx context.Context, values url.Values) (*oauth.ClientSession, error) {
+	if m == nil || m.profile != grantSteady {
+		return nil, errors.New("oauthclient: steady OAuth manager is required")
+	}
+	return m.finishSession(ctx, values)
+}
+
+func (m *Manager) finishSession(ctx context.Context, values url.Values) (*oauth.ClientSession, error) {
 	data, err := m.app.ProcessCallback(ctx, values)
 	if err != nil {
-		return nil, fmt.Errorf("oauthclient: process callback: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidCallback, err)
+	}
+	session, sessionErr := m.sessionFromCallbackData(data)
+	if sessionErr != nil {
+		rejection := fmt.Errorf("%w: reconstruct persisted OAuth session: %v", repository.ErrUnauthorized, sessionErr)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, nil, rejection)
 	}
 	if data.AccountDID != m.did || !sameOriginString(data.HostURL, m.origin) {
-		return nil, fmt.Errorf("%w: OAuth subject or resource server mismatch", repository.ErrTarget)
+		rejection := fmt.Errorf("%w: OAuth subject or resource server mismatch", repository.ErrTarget)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, session, rejection)
 	}
-	for _, required := range m.scopes {
-		if !contains(data.Scopes, required) {
-			_ = m.app.Store.DeleteSession(ctx, data.AccountDID, data.SessionID)
-			return nil, fmt.Errorf("%w: OAuth grant omitted a required scope", repository.ErrUnauthorized)
-		}
+	if err := m.validateGrant(data.Scopes); err != nil {
+		rejection := fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+		return nil, m.rejectSession(ctx, data.AccountDID, data.SessionID, session, rejection)
 	}
-	return m.Resume(ctx, data.SessionID)
+	return session, nil
+}
+
+func (m *Manager) sessionFromCallbackData(data *oauth.ClientSessionData) (*oauth.ClientSession, error) {
+	if data == nil {
+		return nil, errors.New("oauthclient: callback supplied no session data")
+	}
+	privateKey, err := atcrypto.ParsePrivateMultibase(data.DPoPPrivateKeyMultibase)
+	if err != nil {
+		return nil, err
+	}
+	session := &oauth.ClientSession{
+		Client: m.app.Client, Config: m.app.Config, Data: data, DPoPPrivateKey: privateKey,
+	}
+	session.PersistSessionCallback = func(ctx context.Context, updated *oauth.ClientSessionData) {
+		_ = m.app.Store.SaveSession(ctx, *updated)
+	}
+	return session, nil
 }
 
 func (m *Manager) Resume(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
+	if m == nil || m.profile != grantSteady {
+		return nil, errors.New("oauthclient: steady OAuth manager is required")
+	}
+	return m.resumeSession(ctx, sessionID)
+}
+
+// RevokeAndDelete resumes and revalidates one exact steady session, confirms
+// remote revocation of both OAuth tokens, and only then removes the encrypted
+// local session. A failed remote revocation deliberately retains the encrypted
+// session so an operator can retry instead of losing the only revocation
+// handle while a token may still be valid.
+func (m *Manager) RevokeAndDelete(ctx context.Context, sessionID string) error {
+	if m == nil || m.profile != grantSteady {
+		return errors.New("oauthclient: steady OAuth manager is required")
+	}
+	session, err := m.loadValidatedSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if session.Data == nil || session.Data.AuthServerRevocationEndpoint == "" {
+		return errors.New("oauthclient: remote OAuth revocation unavailable; encrypted session retained for retry")
+	}
+	revokeCtx, revokeCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = session.RevokeSession(revokeCtx)
+	revokeCancel()
+	if err != nil {
+		return fmt.Errorf("oauthclient: remote OAuth revocation unconfirmed; encrypted session retained for retry: %w", err)
+	}
+	deleteCtx, deleteCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = m.app.Store.DeleteSession(deleteCtx, m.did, sessionID)
+	deleteCancel()
+	if err != nil {
+		return fmt.Errorf("oauthclient: remote OAuth revocation confirmed but encrypted local session deletion failed: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) resumeSession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
+	session, err := m.loadValidatedSession(ctx, sessionID)
+	if err == nil {
+		return session, nil
+	}
+	if session == nil {
+		return nil, err
+	}
+	return nil, m.rejectSession(ctx, m.did, sessionID, session, err)
+}
+
+// loadValidatedSession performs no cleanup. Explicit steady revocation and
+// provisioning cleanup retries use it so validation failures retain the
+// encrypted handle for bounded operator recovery.
+func (m *Manager) loadValidatedSession(ctx context.Context, sessionID string) (*oauth.ClientSession, error) {
 	if sessionID == "" {
 		return nil, errors.New("oauthclient: session ID is required")
 	}
@@ -127,55 +277,307 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*oauth.ClientSe
 		return nil, fmt.Errorf("oauthclient: resume session: %w", err)
 	}
 	if session.Data.AccountDID != m.did || !sameOriginString(session.Data.HostURL, m.origin) {
-		return nil, fmt.Errorf("%w: resumed OAuth session target mismatch", repository.ErrTarget)
+		return session, fmt.Errorf("%w: resumed OAuth session target mismatch", repository.ErrTarget)
+	}
+	if err := m.validateGrant(session.Data.Scopes); err != nil {
+		return session, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
 	}
 	return session, nil
 }
 
+func (m *Manager) rejectSession(_ context.Context, storageDID syntax.DID, sessionID string, session *oauth.ClientSession, rejection error) error {
+	var resumeErr error
+	if session == nil {
+		resumeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		session, resumeErr = m.app.ResumeSession(resumeCtx, storageDID, sessionID)
+		cancel()
+	}
+	cleanupErr := m.cleanupSession(context.Background(), storageDID, sessionID, session)
+	if resumeErr != nil {
+		resumeErr = fmt.Errorf("oauthclient: resume rejected OAuth session for cleanup: %w", resumeErr)
+	}
+	combined := errors.Join(rejection, resumeErr, cleanupErr)
+	if storageDID == m.did && validCleanupSessionID(sessionID) && errors.Is(cleanupErr, ErrCleanupRetained) {
+		return &retainedSessionError{sessionID: sessionID, err: combined}
+	}
+	return combined
+}
+
 func (m *Manager) Doer(session *oauth.ClientSession) (*SessionDoer, error) {
+	if m == nil || m.profile != grantSteady {
+		return nil, repository.ErrUnauthorized
+	}
+	return m.sessionDoer(session)
+}
+
+func (m *Manager) sessionDoer(session *oauth.ClientSession) (*SessionDoer, error) {
 	if session == nil || session.Data == nil || session.Data.AccountDID != m.did || !sameOriginString(session.Data.HostURL, m.origin) {
 		return nil, repository.ErrTarget
 	}
-	return &SessionDoer{session: session, client: m.client, origin: m.origin}, nil
+	if err := m.validateGrant(session.Data.Scopes); err != nil {
+		return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+	}
+	return &SessionDoer{
+		session: session, client: m.client, origin: m.origin, did: m.did.String(),
+		spaceKey: m.spaceKey, profile: m.profile,
+	}, nil
 }
 
 type SessionDoer struct {
-	mu      sync.Mutex
-	session *oauth.ClientSession
-	client  *http.Client
-	origin  string
+	mu       sync.Mutex
+	session  *oauth.ClientSession
+	client   *http.Client
+	origin   string
+	did      string
+	spaceKey string
+	profile  grantProfile
 }
 
 func (d *SessionDoer) Do(ctx context.Context, req *http.Request, endpoint string) (*http.Response, error) {
 	if req == nil || req.URL == nil || !sameOrigin(req.URL, d.origin) {
 		return nil, repository.ErrTarget
 	}
-	nsid, err := syntax.ParseNSID(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("oauthclient: parse endpoint: %w", err)
+	if req.Host != "" && !strings.EqualFold(req.Host, req.URL.Host) {
+		return nil, repository.ErrTarget
+	}
+	if _, err := syntax.ParseNSID(endpoint); err != nil || req.URL.EscapedPath() != "/xrpc/"+endpoint {
+		return nil, repository.ErrTarget
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	resp, err := d.session.DoWithAuth(d.client, req.WithContext(ctx), nsid)
+	if d.session == nil || d.session.Data == nil {
+		return nil, repository.ErrTarget
+	}
+	if err := d.validateGrant(d.session.Data.Scopes); err != nil {
+		return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+	}
+	accessToken, originalNonce := d.session.GetHostAccessData()
+	if accessToken == "" {
+		return nil, ErrReauthorizationRequired
+	}
+	dpopURL := *req.URL
+	dpopURL.RawQuery = ""
+	dpopURL.ForceQuery = false
+	dpopURL.Fragment = ""
+	dpopURL.RawFragment = ""
+
+	for attempt := range 2 {
+		currentToken, currentNonce := d.session.GetHostAccessData()
+		if currentToken != accessToken {
+			return nil, ErrReauthorizationRequired
+		}
+		proof, err := d.session.NewHostDPoP(req.Method, dpopURL.String())
+		if err != nil {
+			return nil, fmt.Errorf("oauthclient: create host DPoP proof: %w", err)
+		}
+		if currentToken, _ = d.session.GetHostAccessData(); currentToken != accessToken {
+			return nil, ErrReauthorizationRequired
+		}
+		attemptRequest := req.Clone(ctx)
+		attemptRequest.Header = req.Header.Clone()
+		if attempt > 0 && req.Body != nil {
+			if req.GetBody == nil {
+				return nil, errors.New("oauthclient: request body cannot be replayed for a DPoP nonce")
+			}
+			attemptRequest.Body, err = req.GetBody()
+			if err != nil {
+				return nil, fmt.Errorf("oauthclient: replay request body: %w", err)
+			}
+		}
+		attemptRequest.Header.Set("Authorization", "DPoP "+accessToken)
+		attemptRequest.Header.Set("DPoP", proof)
+		resp, err := d.client.Do(attemptRequest)
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil || resp.Request == nil || !sameOrigin(resp.Request.URL, d.origin) ||
+			(resp.Request.Host != "" && !strings.EqualFold(resp.Request.Host, resp.Request.URL.Host)) {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, repository.ErrTarget
+		}
+		if err := d.validateGrant(d.session.Data.Scopes); err != nil {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("%w: %v", repository.ErrUnauthorized, err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("WWW-Authenticate") == "" {
+			return resp, nil
+		}
+		authHeader := resp.Header.Get("WWW-Authenticate")
+		if strings.Contains(authHeader, `error="invalid_token"`) {
+			_ = resp.Body.Close()
+			return nil, ErrReauthorizationRequired
+		}
+		newNonce := resp.Header.Get("DPoP-Nonce")
+		if !strings.Contains(authHeader, `error="use_dpop_nonce"`) || newNonce == "" {
+			return resp, nil
+		}
+		_ = resp.Body.Close()
+		if attempt > 0 || newNonce == currentNonce || newNonce == originalNonce || len(newNonce) > maxDPoPNonceBytes {
+			return nil, errors.New("oauthclient: invalid or repeated PDS DPoP nonce")
+		}
+		d.session.UpdateHostDPoPNonce(ctx, newNonce)
+	}
+	return nil, errors.New("oauthclient: exhausted PDS DPoP nonce retry")
+}
+
+func (m *Manager) validateGrant(scopes []string) error {
+	if m.profile == grantProvisioning {
+		return ValidateProvisioningGrant(scopes, m.did.String(), m.spaceKey)
+	}
+	return ValidateSteadyGrant(scopes, m.did.String(), m.spaceKey)
+}
+
+func (d *SessionDoer) validateGrant(scopes []string) error {
+	if d.profile == grantProvisioning {
+		return ValidateProvisioningGrant(scopes, d.did, d.spaceKey)
+	}
+	return ValidateSteadyGrant(scopes, d.did, d.spaceKey)
+}
+
+func (m *Manager) cleanupSession(_ context.Context, did syntax.DID, sessionID string, session *oauth.ClientSession) error {
+	if session == nil {
+		return fmt.Errorf("%w: remote OAuth revocation unconfirmed because the session could not be loaded", ErrCleanupRetained)
+	}
+	if session.Data == nil || session.Data.AuthServerRevocationEndpoint == "" {
+		return fmt.Errorf("%w: remote OAuth revocation unavailable", ErrCleanupRetained)
+	}
+	revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	revokeErr := session.RevokeSession(revokeCtx)
+	revokeCancel()
+	if revokeErr != nil {
+		return fmt.Errorf("%w: remote OAuth revocation unconfirmed: %v", ErrCleanupRetained, revokeErr)
+	}
+	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	deleteErr := m.app.Store.DeleteSession(deleteCtx, did, sessionID)
+	deleteCancel()
+	if deleteErr != nil {
+		return fmt.Errorf("%w: remote OAuth revocation confirmed but local deletion failed: %v", ErrCleanupRetained, deleteErr)
+	}
+	return nil
+}
+
+// Provisioner owns one isolated exact-skey create grant. The session never
+// escapes: Finish creates/verifies the predetermined mailbox, confirms remote
+// revocation, and only then deletes the encrypted local retry handle.
+type Provisioner struct {
+	manager *Manager
+}
+
+func NewProvisioner(cfg Config, store oauth.ClientAuthStore) (*Provisioner, error) {
+	manager, err := newManager(cfg, store, grantProvisioning)
 	if err != nil {
 		return nil, err
 	}
-	if resp == nil || resp.Request == nil || !sameOrigin(resp.Request.URL, d.origin) {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-		return nil, repository.ErrTarget
-	}
-	return resp, nil
+	return &Provisioner{manager: manager}, nil
 }
 
-func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
+func (p *Provisioner) Start(ctx context.Context) (string, error) {
+	if p == nil || p.manager == nil {
+		return "", errors.New("oauthclient: provisioning manager is required")
+	}
+	return p.manager.Start(ctx)
+}
+
+func (p *Provisioner) StartDetailed(ctx context.Context) (StartResult, error) {
+	if p == nil || p.manager == nil {
+		return StartResult{}, errors.New("oauthclient: provisioning manager is required")
+	}
+	return p.manager.StartDetailed(ctx)
+}
+
+func (p *Provisioner) ClientMetadata() oauth.ClientMetadata {
+	if p == nil || p.manager == nil {
+		return oauth.ClientMetadata{}
+	}
+	return p.manager.ClientMetadata()
+}
+
+func (p *Provisioner) Finish(ctx context.Context, values url.Values) (spaceprovision.Result, error) {
+	outcome, err := p.FinishDetailed(ctx, values)
+	return outcome.Result, err
+}
+
+func (p *Provisioner) FinishDetailed(ctx context.Context, values url.Values) (ProvisioningOutcome, error) {
+	if p == nil || p.manager == nil {
+		return ProvisioningOutcome{}, errors.New("oauthclient: provisioning manager is required")
+	}
+	session, err := p.manager.finishSession(ctx, values)
+	if err != nil {
+		var retained *retainedSessionError
+		if errors.As(err, &retained) {
+			return ProvisioningOutcome{RetainedSessionID: retained.sessionID}, err
+		}
+		return ProvisioningOutcome{}, err
+	}
+	return p.completeDetailed(ctx, session)
+}
+
+func (p *Provisioner) complete(ctx context.Context, session *oauth.ClientSession) (spaceprovision.Result, error) {
+	outcome, err := p.completeDetailed(ctx, session)
+	return outcome.Result, err
+}
+
+func (p *Provisioner) completeDetailed(ctx context.Context, session *oauth.ClientSession) (ProvisioningOutcome, error) {
+	if session == nil || session.Data == nil {
+		return ProvisioningOutcome{}, repository.ErrTarget
+	}
+	doer, doerErr := p.manager.sessionDoer(session)
+	var result spaceprovision.Result
+	var provisionErr error
+	if doerErr == nil {
+		client, err := spaceprovision.New(spaceprovision.Config{
+			Origin: p.manager.origin, DID: p.manager.did.String(), SpaceKey: p.manager.spaceKey,
+			AllowHTTP: p.manager.allowHTTP,
+		}, doer)
+		if err != nil {
+			provisionErr = err
+		} else {
+			result, provisionErr = client.Ensure(ctx)
+		}
+	} else {
+		provisionErr = doerErr
+	}
+	cleanupErr := p.manager.cleanupSession(ctx, p.manager.did, session.Data.SessionID, session)
+	outcome := ProvisioningOutcome{Result: result}
+	if errors.Is(cleanupErr, ErrCleanupRetained) {
+		outcome.RetainedSessionID = session.Data.SessionID
+	}
+	return outcome, errors.Join(provisionErr, cleanupErr)
+}
+
+// RetryCleanup resumes one exact retained create-only provisioning session,
+// revalidates its account/provider/grant binding, and retries revoke-then-delete.
+func (p *Provisioner) RetryCleanup(ctx context.Context, sessionID string) error {
+	if p == nil || p.manager == nil || p.manager.profile != grantProvisioning {
+		return errors.New("oauthclient: provisioning manager is required")
+	}
+	if !validCleanupSessionID(sessionID) {
+		return errors.New("oauthclient: invalid retained provisioning session ID")
+	}
+	session, err := p.manager.loadValidatedSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	return p.manager.cleanupSession(ctx, p.manager.did, sessionID, session)
+}
+
+func validCleanupSessionID(sessionID string) bool {
+	return sessionID != "" && len(sessionID) <= 1024 && !strings.ContainsAny(sessionID, "\r\n\x00")
+}
+
+// NewPinnedHTTPClient returns a no-proxy, no-redirect client bound to the
+// exact resolved addresses and TLS hostname of one clean origin.
+func NewPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
 	origin, err := url.Parse(rawOrigin)
 	if err != nil || origin.Hostname() == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || (origin.Path != "" && origin.Path != "/") {
 		return nil, "", errors.New("oauthclient: provider must be a clean origin")
 	}
+	hadExplicitPort := origin.Port() != ""
+	canonicalizeOrigin(origin)
 	if origin.Scheme == "http" {
-		if !allowHTTP || origin.Port() == "" || net.ParseIP(origin.Hostname()) == nil || !net.ParseIP(origin.Hostname()).IsLoopback() {
+		if !allowHTTP || !hadExplicitPort || net.ParseIP(origin.Hostname()) == nil || !net.ParseIP(origin.Hostname()).IsLoopback() {
 			return nil, "", errors.New("oauthclient: HTTP is allowed only for an explicit loopback test origin")
 		}
 	} else if origin.Scheme != "https" {
@@ -184,10 +586,7 @@ func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string
 	origin.Path = ""
 	origin.RawPath = ""
 	cleanOrigin := strings.TrimSuffix(origin.String(), "/")
-	port := origin.Port()
-	if port == "" {
-		port = "443"
-	}
+	port := originDialPort(origin)
 	expectedAddress := net.JoinHostPort(origin.Hostname(), port)
 	dialTargets := []string{expectedAddress}
 	if origin.Scheme == "https" {
@@ -242,6 +641,79 @@ func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string
 	return client, cleanOrigin, nil
 }
 
+func canonicalizeOrigin(origin *url.URL) {
+	origin.Scheme = strings.ToLower(origin.Scheme)
+	hostname := strings.ToLower(origin.Hostname())
+	port := origin.Port()
+	if (origin.Scheme == "https" && port == "443") || (origin.Scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		origin.Host = net.JoinHostPort(hostname, port)
+	} else if strings.Contains(hostname, ":") {
+		origin.Host = "[" + hostname + "]"
+	} else {
+		origin.Host = hostname
+	}
+}
+
+func originDialPort(origin *url.URL) string {
+	if port := origin.Port(); port != "" {
+		return port
+	}
+	if origin.Scheme == "http" {
+		return "80"
+	}
+	return "443"
+}
+
+func newPinnedHTTPClient(rawOrigin string, allowHTTP bool) (*http.Client, string, error) {
+	return NewPinnedHTTPClient(rawOrigin, allowHTTP)
+}
+
+type authStateCaptureKey struct{}
+
+type trackingAuthStore struct {
+	oauth.ClientAuthStore
+}
+
+func (s trackingAuthStore) SaveAuthRequestInfo(ctx context.Context, info oauth.AuthRequestData) error {
+	if err := s.ClientAuthStore.SaveAuthRequestInfo(ctx, info); err != nil {
+		return err
+	}
+	if captured, ok := ctx.Value(authStateCaptureKey{}).(chan string); ok {
+		select {
+		case captured <- info.State:
+		default:
+		}
+	}
+	return nil
+}
+
+func validateClientLocation(rawCallback, rawClientID string) (bool, error) {
+	callback, err := url.Parse(rawCallback)
+	if err != nil || callback.Host == "" || callback.User != nil || callback.Opaque != "" || callback.RawQuery != "" || callback.Fragment != "" || callback.Path == "" || callback.Path == "/" || callback.RawPath != "" {
+		return false, errors.New("oauthclient: callback must be an exact loopback or HTTPS URL")
+	}
+	if callback.Scheme == "http" && callback.Hostname() == "127.0.0.1" && callback.Port() != "" && callback.Path == "/oauth/callback" {
+		if rawClientID != "" {
+			return false, errors.New("oauthclient: localhost client ID is derived and must be empty")
+		}
+		return false, nil
+	}
+	if callback.Scheme != "https" || callback.Port() != "" || net.ParseIP(callback.Hostname()) != nil || !strings.Contains(callback.Hostname(), ".") || strings.EqualFold(callback.Hostname(), "localhost") {
+		return false, errors.New("oauthclient: public callback must use a public HTTPS hostname without an explicit port")
+	}
+	clientID, err := url.Parse(rawClientID)
+	if err != nil || clientID.Scheme != "https" || clientID.Host == "" || clientID.User != nil || clientID.Opaque != "" || clientID.RawQuery != "" || clientID.Fragment != "" || clientID.Path == "" || clientID.Path == "/" || clientID.RawPath != "" {
+		return false, errors.New("oauthclient: public client metadata ID must be an exact HTTPS URL")
+	}
+	if !sameOrigin(callback, clientID.Scheme+"://"+clientID.Host) {
+		return false, errors.New("oauthclient: public callback and client metadata must share an origin")
+	}
+	return true, nil
+}
+
 func sameOriginString(raw, expected string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && sameOrigin(u, expected)
@@ -249,7 +721,7 @@ func sameOriginString(raw, expected string) bool {
 
 func sameOrigin(u *url.URL, expected string) bool {
 	want, err := url.Parse(expected)
-	if err != nil || u == nil {
+	if err != nil || u == nil || u.User != nil || u.Opaque != "" || u.Host == "" || u.Fragment != "" {
 		return false
 	}
 	return strings.EqualFold(u.Scheme, want.Scheme) && strings.EqualFold(u.Hostname(), want.Hostname()) && effectivePort(u) == effectivePort(want)
@@ -266,13 +738,4 @@ func effectivePort(u *url.URL) string {
 		return "80"
 	}
 	return ""
-}
-
-func contains(values []string, required string) bool {
-	for _, value := range values {
-		if value == required {
-			return true
-		}
-	}
-	return false
 }
